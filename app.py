@@ -35,6 +35,8 @@ _sparkline_buffers = {
 }
 _headroom_last_total = 0
 _headroom_history = []  # rolling buffer of recent headroom events  # last cumulative total we saw
+_jcodemunch_last_total = 0
+_jcodemunch_history = []
 
 
 def _run(cmd, timeout=2):
@@ -184,12 +186,26 @@ def collect_jcodemunch():
 
         version = _run([JCODEMUNCH_BIN, "--version"])
 
+        global _jcodemunch_last_total, _jcodemunch_history
+        if _jcodemunch_last_total > 0 and total_tokens_saved > _jcodemunch_last_total:
+            delta = total_tokens_saved - _jcodemunch_last_total
+            _jcodemunch_history.append({
+                "time": datetime.now(timezone.utc).isoformat(),
+                "tool": "jcodemunch",
+                "cmd": f"saved {delta:,} tokens",
+                "saved_tokens": delta,
+                "saved_pct": 0,
+            })
+            _jcodemunch_history = _jcodemunch_history[-20:]
+        _jcodemunch_last_total = total_tokens_saved
+
         return {
             "active": True,
             "total_saved": total_tokens_saved,
             "repos_indexed": repos_indexed,
             "index_size_mb": index_size_mb,
             "version": version or "unknown",
+            "history": list(_jcodemunch_history),
         }
     except Exception:
         return None
@@ -255,6 +271,8 @@ def collect_all():
         history.extend(results["rtk"]["history"])
     if "history" in results.get("headroom", {}):
         history.extend(results["headroom"]["history"])
+    if "history" in results.get("jcodemunch", {}):
+        history.extend(results["jcodemunch"]["history"])
 
     # Sort by time descending, limit to 20
     history.sort(key=lambda x: x.get("time", ""), reverse=True)
