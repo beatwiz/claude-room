@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ed?logo=docker&logoColor=white)](Dockerfile)
 
-Live wallboard for monitoring token savings across your Claude Code toolchain. Tracks [RTK](https://github.com/reachingforthejack/rtk), [Headroom](https://github.com/chopratejas/headroom), and [jCodeMunch](https://github.com/jgravelle/jcodemunch-mcp) in a single-page dashboard with real-time SSE updates.
+Live wallboard for monitoring token savings across your Claude Code toolchain. Tracks [RTK](https://github.com/reachingforthejack/rtk), [Headroom](https://github.com/chopratejas/headroom), [jCodeMunch](https://github.com/jgravelle/jcodemunch-mcp), and [jDocMunch](https://github.com/jgravelle/jdocmunch-mcp) in a single-page dashboard with real-time SSE updates.
 
 ![Dashboard](screenshots/dashboard-full.png)
 
@@ -13,6 +13,7 @@ Live wallboard for monitoring token savings across your Claude Code toolchain. T
 - **RTK** -- command-level token savings from the CLI proxy (SQLite)
 - **Headroom** -- context compression stats from the MCP server (HTTP API)
 - **jCodeMunch** -- indexed repos and session savings (filesystem + MCP)
+- **jDocMunch** -- documentation indexing and section retrieval savings (filesystem)
 - **Combined total** with sparkline trends and live activity feed
 
 ## Quick start
@@ -51,6 +52,7 @@ All settings via environment variables. Copy `.env.example` for reference:
 | `RTK_DB_PATH` | `~/.local/share/rtk/history.db` | RTK SQLite database |
 | `RTK_BIN` | `rtk` | Path to RTK binary |
 | `JCODEMUNCH_INDEX_DIR` | `~/.code-index` | jCodeMunch index directory |
+| `JDOCMUNCH_INDEX_DIR` | `~/.doc-index` | jDocMunch index directory |
 | `JCODEMUNCH_BIN` | `jcodemunch-mcp` | Path to jCodeMunch binary |
 | `SSE_INTERVAL` | `30` | Seconds between SSE pushes |
 

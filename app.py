@@ -26,6 +26,7 @@ RTK_DB_PATH = os.environ.get("RTK_DB_PATH", os.path.join(HOME, ".local", "share"
 RTK_BIN = os.environ.get("RTK_BIN", "rtk")
 JCODEMUNCH_INDEX_DIR = os.environ.get("JCODEMUNCH_INDEX_DIR", os.path.join(HOME, ".code-index"))
 JCODEMUNCH_BIN = os.environ.get("JCODEMUNCH_BIN", "jcodemunch-mcp")
+JDOCMUNCH_INDEX_DIR = os.environ.get("JDOCMUNCH_INDEX_DIR", os.path.join(HOME, ".doc-index"))
 PORT = int(os.environ.get("PORT", "8095"))
 SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "30"))
 
@@ -35,12 +36,16 @@ _sparkline_buffers = {
     "rtk": deque(maxlen=60),
     "headroom": deque(maxlen=60),
     "jcodemunch": deque(maxlen=60),
+    "jdocmunch": deque(maxlen=60),
 }
 _headroom_last_total = 0
 _headroom_history = []
 _jcodemunch_last_total = 0
 _jcodemunch_last_mtime = 0
 _jcodemunch_history = []
+_jdocmunch_last_total = 0
+_jdocmunch_last_mtime = 0
+_jdocmunch_history = []
 
 
 def _run(cmd, timeout=2):
@@ -231,6 +236,72 @@ def collect_jcodemunch():
         return None
 
 
+def collect_jdocmunch():
+    global _jdocmunch_last_total, _jdocmunch_last_mtime, _jdocmunch_history
+    try:
+        index_dir = JDOCMUNCH_INDEX_DIR
+        if not os.path.isdir(index_dir):
+            return None
+
+        savings_path = os.path.join(index_dir, "_savings.json")
+        total_tokens_saved = 0
+        if os.path.exists(savings_path):
+            with open(savings_path) as f:
+                data = json.load(f)
+            total_tokens_saved = data.get("total_tokens_saved", 0)
+
+        index_files = [f for f in glob.glob(os.path.join(index_dir, "*.json"))
+                       if not f.endswith("_savings.json")]
+        docs_indexed = len(index_files)
+        index_size_mb = round(sum(os.path.getsize(f) for f in index_files) / (1024 * 1024), 1)
+
+        version = "1.4.5"
+
+        newest_mtime = 0
+        all_json = glob.glob(os.path.join(index_dir, "**", "*.json"), recursive=True)
+        for f in all_json:
+            try:
+                mt = os.path.getmtime(f)
+                if mt > newest_mtime:
+                    newest_mtime = mt
+            except OSError:
+                pass
+
+        if newest_mtime > _jdocmunch_last_mtime and _jdocmunch_last_mtime > 0:
+            delta = total_tokens_saved - _jdocmunch_last_total
+            if delta > 0:
+                _jdocmunch_history.append({
+                    "ts": time.strftime("%H:%M:%S"),
+                    "tool": "jdocmunch",
+                    "cmd": f"indexed/queried -- saved {delta:,} tokens",
+                    "saved_tokens": delta,
+                    "saved_pct": 0,
+                })
+            else:
+                _jdocmunch_history.append({
+                    "ts": time.strftime("%H:%M:%S"),
+                    "tool": "jdocmunch",
+                    "cmd": f"query across {docs_indexed} docs ({index_size_mb}MB indexed)",
+                    "saved_tokens": 0,
+                    "saved_pct": 0,
+                })
+            if len(_jdocmunch_history) > 20:
+                _jdocmunch_history.pop(0)
+        _jdocmunch_last_mtime = newest_mtime
+        _jdocmunch_last_total = total_tokens_saved
+
+        return {
+            "active": True,
+            "total_saved": total_tokens_saved,
+            "docs_indexed": docs_indexed,
+            "index_size_mb": index_size_mb,
+            "version": version,
+            "history": list(_jdocmunch_history),
+        }
+    except Exception:
+        return None
+
+
 def collect_all():
     """Collect from all tools, maintain sparklines and fallbacks."""
     global _last_good
@@ -239,6 +310,7 @@ def collect_all():
         "rtk": collect_rtk,
         "headroom": collect_headroom,
         "jcodemunch": collect_jcodemunch,
+        "jdocmunch": collect_jdocmunch,
     }
 
     results = {}
@@ -293,6 +365,8 @@ def collect_all():
         history.extend(results["headroom"]["history"])
     if "history" in results.get("jcodemunch", {}):
         history.extend(results["jcodemunch"]["history"])
+    if "history" in results.get("jdocmunch", {}):
+        history.extend(results["jdocmunch"]["history"])
 
     # Sort by time descending, limit to 20
     history.sort(key=lambda x: x.get("time", ""), reverse=True)
@@ -306,6 +380,7 @@ def collect_all():
         "rtk": results["rtk"],
         "headroom": results["headroom"],
         "jcodemunch": results["jcodemunch"],
+        "jdocmunch": results["jdocmunch"],
         "sparklines": sparklines,
         "history": history,
     }
@@ -381,7 +456,7 @@ body {
 /* Cards grid */
 .cards {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 12px;
     margin-bottom: 12px;
 }
@@ -471,6 +546,10 @@ body {
 .fill-jcodemunch { background: #ff9f43; }
 .stroke-jcodemunch { stroke: #ff9f43; }
 .area-jcodemunch { fill: rgba(255, 159, 67, 0.1); }
+.clr-jdocmunch { color: #a55eea; }
+.fill-jdocmunch { background: #a55eea; }
+.stroke-jdocmunch { stroke: #a55eea; }
+.area-jdocmunch { fill: rgba(165, 94, 234, 0.1); }
 
 /* Feed */
 .feed-container {
@@ -611,6 +690,22 @@ body {
         <div class="card-delta" id="jcodemunch-delta"></div>
     </div>
 
+    <!-- jDocMunch -->
+    <div class="card" id="jdocmunch-card">
+        <div class="card-header">
+            <a href="https://github.com/jgravelle/jdocmunch-mcp" target="_blank" class="card-name">jDocMunch</a>
+            <span class="card-version" id="jdocmunch-version">--</span>
+        </div>
+        <div class="card-value clr-jdocmunch" id="jdocmunch-value">--</div>
+        <div class="card-sub" id="jdocmunch-sub">tokens saved</div>
+        <div class="progress-track"><div class="progress-fill fill-jdocmunch" id="jdocmunch-bar" style="width:0%"></div></div>
+        <div class="card-stats" id="jdocmunch-stats">
+            <span><span class="label">docs</span> <span class="val">--</span></span>
+        </div>
+        <div class="sparkline-container"><svg id="jdocmunch-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
+        <div class="card-delta" id="jdocmunch-delta"></div>
+    </div>
+
 </div>
 
 <!-- Activity Feed -->
@@ -651,11 +746,12 @@ function shortVersion(v) {
     return parts[parts.length - 1];
 }
 
-var TOOLS = ['rtk', 'headroom', 'jcodemunch'];
+var TOOLS = ['rtk', 'headroom', 'jcodemunch', 'jdocmunch'];
 var TOOL_COLOURS = {
     rtk: '#00ff88',
     headroom: '#00bfff',
-    jcodemunch: '#ff9f43'
+    jcodemunch: '#ff9f43',
+    jdocmunch: '#a55eea'
 };
 
 function renderSparkline(svgEl, points, tool) {
@@ -740,6 +836,20 @@ function updateDashboard(d) {
         document.getElementById('jcodemunch-stats').innerHTML =
             '<span><span class="label">repos</span> <span class="val">' + (jc.repos_indexed || 0) + '</span></span>' +
             '<span><span class="label">indexed</span> <span class="val">' + (jc.index_size_mb || 0) + 'MB</span></span>';
+    }
+
+    // jDocMunch
+    var jd = d.jdocmunch || {};
+    var jdCard = document.getElementById('jdocmunch-card');
+    jdCard.className = jd.active ? 'card' : 'card inactive';
+    document.getElementById('jdocmunch-version').textContent = shortVersion(jd.version);
+    document.getElementById('jdocmunch-value').textContent = jd.active ? formatTokens(jd.total_saved || 0) : '--';
+    document.getElementById('jdocmunch-sub').textContent = 'tokens saved';
+    document.getElementById('jdocmunch-bar').style.width = '0%';
+    if (jd.active) {
+        document.getElementById('jdocmunch-stats').innerHTML =
+            '<span><span class="label">docs</span> <span class="val">' + (jd.docs_indexed || 0) + '</span></span>' +
+            '<span><span class="label">indexed</span> <span class="val">' + (jd.index_size_mb || 0) + 'MB</span></span>';
     }
 
     // Sparklines
