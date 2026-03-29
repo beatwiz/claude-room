@@ -27,6 +27,7 @@ RTK_BIN = os.environ.get("RTK_BIN", "rtk")
 JCODEMUNCH_INDEX_DIR = os.environ.get("JCODEMUNCH_INDEX_DIR", os.path.join(HOME, ".code-index"))
 JCODEMUNCH_BIN = os.environ.get("JCODEMUNCH_BIN", "jcodemunch-mcp")
 JDOCMUNCH_INDEX_DIR = os.environ.get("JDOCMUNCH_INDEX_DIR", os.path.join(HOME, ".doc-index"))
+JDOCMUNCH_BIN = os.environ.get("JDOCMUNCH_BIN", "jdocmunch-mcp")
 PORT = int(os.environ.get("PORT", "8095"))
 SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "30"))
 
@@ -179,7 +180,11 @@ def collect_headroom():
 def collect_jcodemunch():
     """Read jcodemunch savings and index stats."""
     try:
-        savings_path = os.path.join(JCODEMUNCH_INDEX_DIR, "_savings.json")
+        index_dir = JCODEMUNCH_INDEX_DIR
+        if not os.path.isdir(index_dir):
+            return None
+
+        savings_path = os.path.join(index_dir, "_savings.json")
         total_tokens_saved = 0
         if os.path.exists(savings_path):
             with open(savings_path) as f:
@@ -222,7 +227,7 @@ def collect_jcodemunch():
         _jcodemunch_last_total = total_tokens_saved
 
         return {
-            "active": True,
+            "active": repos_indexed > 0 or total_tokens_saved > 0,
             "total_saved": total_tokens_saved,
             "repos_indexed": repos_indexed,
             "index_size_mb": index_size_mb,
@@ -251,7 +256,16 @@ def collect_jdocmunch():
         docs_indexed = len(index_files)
         index_size_mb = round(sum(os.path.getsize(f) for f in index_files) / (1024 * 1024), 1)
 
-        version = "1.4.5"
+        v = _run([JDOCMUNCH_BIN, "--version"])
+        if not v:
+            raw = _run(["pipx", "list", "--short"])
+            if raw:
+                for line in raw.splitlines():
+                    if "jdocmunch" in line:
+                        parts = line.strip().split()
+                        v = parts[1] if len(parts) > 1 else None
+                        break
+        version = v
 
         # _savings.json updates on every get_section call (token savings).
         # Index JSON files update on re-index. Check both for activity.
@@ -286,7 +300,7 @@ def collect_jdocmunch():
         _jdocmunch_last_total = total_tokens_saved
 
         return {
-            "active": True,
+            "active": docs_indexed > 0 or total_tokens_saved > 0,
             "total_saved": total_tokens_saved,
             "docs_indexed": docs_indexed,
             "index_size_mb": index_size_mb,
@@ -315,7 +329,7 @@ def collect_all():
             results[name] = data
             _last_good[name] = data
         else:
-            results[name] = _last_good.get(name, {"active": False, "version": "unknown"})
+            results[name] = _last_good.get(name, {"active": False, "version": "unknown", "total_saved": 0, "history": []})
 
     # Build combined saved total
     combined_saved = 0
@@ -327,6 +341,8 @@ def collect_all():
     now = time.time()
     for name in collectors:
         tool_data = results[name]
+        if not tool_data.get("active"):
+            continue
         cumulative = tool_data.get("total_saved", 0)
         _sparkline_buffers[name].append((now, cumulative))
 
