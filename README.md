@@ -6,7 +6,7 @@
 
 Live wallboard for monitoring token savings across your Claude Code toolchain. Tracks [RTK](https://github.com/reachingforthejack/rtk), [Headroom](https://github.com/chopratejas/headroom), and [jCodeMunch](https://github.com/jgravelle/jcodemunch-mcp) in a single-page dashboard with real-time SSE updates.
 
-![Dashboard](screenshots/dashboard.png)
+![Dashboard](screenshots/dashboard-full.png)
 
 ## What it shows
 
@@ -14,8 +14,6 @@ Live wallboard for monitoring token savings across your Claude Code toolchain. T
 - **Headroom** -- context compression stats from the MCP server (HTTP API)
 - **jCodeMunch** -- indexed repos and session savings (filesystem + MCP)
 - **Combined total** with sparkline trends and live activity feed
-
-![Live Activity Feed](screenshots/live-feed.png)
 
 ## Quick start
 
