@@ -34,7 +34,7 @@ _sparkline_buffers = {
     "jcodemunch": deque(maxlen=60),
 }
 _headroom_last_total = 0
-_headroom_history = []  # rolling buffer of recent headroom events  # last cumulative total we saw
+_headroom_history = []
 _jcodemunch_last_total = 0
 _jcodemunch_history = []
 
