@@ -253,21 +253,20 @@ def collect_jdocmunch():
 
         version = "1.4.5"
 
-        newest_mtime = 0
-        all_json = glob.glob(os.path.join(index_dir, "**", "*.json"), recursive=True)
-        for f in all_json:
-            try:
-                mt = os.path.getmtime(f)
-                if mt > newest_mtime:
-                    newest_mtime = mt
-            except OSError:
-                pass
+        # _savings.json updates on every get_section call (token savings).
+        # Index JSON files update on re-index. Check both for activity.
+        savings_mtime = os.path.getmtime(savings_path) if os.path.exists(savings_path) else 0
+        idx_mtime = max(
+            (os.path.getmtime(f) for f in index_files),
+            default=0,
+        )
+        newest_mtime = max(savings_mtime, idx_mtime)
 
         if newest_mtime > _jdocmunch_last_mtime and _jdocmunch_last_mtime > 0:
             delta = total_tokens_saved - _jdocmunch_last_total
             if delta > 0:
                 _jdocmunch_history.append({
-                    "ts": time.strftime("%H:%M:%S"),
+                    "time": datetime.now(timezone.utc).isoformat(),
                     "tool": "jdocmunch",
                     "cmd": f"indexed/queried -- saved {delta:,} tokens",
                     "saved_tokens": delta,
@@ -275,7 +274,7 @@ def collect_jdocmunch():
                 })
             else:
                 _jdocmunch_history.append({
-                    "ts": time.strftime("%H:%M:%S"),
+                    "time": datetime.now(timezone.utc).isoformat(),
                     "tool": "jdocmunch",
                     "cmd": f"query across {docs_indexed} docs ({index_size_mb}MB indexed)",
                     "saved_tokens": 0,
