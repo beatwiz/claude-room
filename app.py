@@ -250,8 +250,7 @@ def collect_jdocmunch():
                 data = json.load(f)
             total_tokens_saved = data.get("total_tokens_saved", 0)
 
-        index_files = [f for f in glob.glob(os.path.join(index_dir, "*.json"))
-                       if not f.endswith("_savings.json")]
+        index_files = [f for f in glob.glob(os.path.join(index_dir, "local", "*.json"))]
         docs_indexed = len(index_files)
         index_size_mb = round(sum(os.path.getsize(f) for f in index_files) / (1024 * 1024), 1)
 
