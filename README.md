@@ -1,6 +1,10 @@
 # Claude Tools Dashboard
 
-Live wallboard for monitoring token savings across your Claude Code toolchain. Tracks RTK, Headroom, and jCodeMunch in a single-page dashboard with real-time SSE updates.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ed?logo=docker&logoColor=white)](Dockerfile)
+
+Live wallboard for monitoring token savings across your Claude Code toolchain. Tracks [RTK](https://github.com/reachingforthejack/rtk), [Headroom](https://github.com/chopratejas/headroom), and [jCodeMunch](https://github.com/jgravelle/jcodemunch-mcp) in a single-page dashboard with real-time SSE updates.
 
 ![Dashboard](screenshots/dashboard.png)
 
