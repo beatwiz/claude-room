@@ -738,6 +738,28 @@ body {
 @media (max-width: 550px) {
     .cards { grid-template-columns: 1fr; }
 }
+/* Stats ticker */
+.ticker {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 0;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: #555;
+    overflow: hidden;
+    white-space: nowrap;
+}
+.ticker .sep {
+    color: #2a2a3e;
+}
+.ticker .tv {
+    color: #00bfff;
+    font-weight: bold;
+}
+.ticker .pct-green { color: #00ff88; }
+.ticker .pct-yellow { color: #ffcc00; }
+.ticker .pct-red { color: #ff4444; }
 </style>
 </head>
 <body>
@@ -749,6 +771,21 @@ body {
     </div>
     <div class="header-centre" id="combined">COMBINED: <span>0</span> tokens saved</div>
     <div class="header-right" id="clock">--:--:-- &blacksquare; -- --- ----</div>
+</div>
+
+<!-- Stats Ticker -->
+<div class="ticker" id="ticker">
+    <span>This Week: <span class="tv" id="tk-this-week">--</span></span>
+    <span class="sep">|</span>
+    <span>Last Week: <span class="tv" id="tk-last-week">--</span></span>
+    <span class="sep">|</span>
+    <span>~<span class="tv" id="tk-burn">--</span>/day</span>
+    <span class="sep">|</span>
+    <span>Reset: <span class="tv" id="tk-reset">--</span></span>
+    <span class="sep">|</span>
+    <span>5-Hour Window: <span id="tk-session-pct" class="tv">--</span></span>
+    <span class="sep">|</span>
+    <span>Weekly: <span id="tk-weekly-pct" class="tv">--</span></span>
 </div>
 
 <!-- Cards -->
@@ -857,6 +894,13 @@ function shortVersion(v) {
     return parts[parts.length - 1];
 }
 
+function pctClass(n) {
+    if (n == null) return 'tv';
+    if (n > 80) return 'pct-red';
+    if (n > 50) return 'pct-yellow';
+    return 'pct-green';
+}
+
 var TOOLS = ['rtk', 'headroom', 'jcodemunch', 'jdocmunch'];
 var TOOL_COLOURS = {
     rtk: '#00ff88',
@@ -899,6 +943,31 @@ function updateDashboard(d) {
     // Combined
     document.getElementById('combined').innerHTML =
         'COMBINED: <span>' + formatTokens(d.combined_saved) + '</span> tokens saved';
+
+    // Ticker
+    var w = d.weekly || {};
+    var cu = d.claude_usage || {};
+    document.getElementById('tk-this-week').textContent = w.this_week != null ? formatTokens(w.this_week) : '--';
+    document.getElementById('tk-last-week').textContent = w.last_week ? formatTokens(w.last_week) : '--';
+    document.getElementById('tk-burn').textContent = w.burn_rate_daily ? formatTokens(w.burn_rate_daily) : '--';
+    document.getElementById('tk-reset').textContent = w.reset_display || '--';
+
+    var sessionEl = document.getElementById('tk-session-pct');
+    var weeklyEl = document.getElementById('tk-weekly-pct');
+    if (cu.active && cu.session_pct != null) {
+        sessionEl.textContent = cu.session_pct + '%';
+        sessionEl.className = pctClass(cu.session_pct);
+    } else {
+        sessionEl.textContent = '--';
+        sessionEl.className = 'tv';
+    }
+    if (cu.active && cu.weekly_pct != null) {
+        weeklyEl.textContent = cu.weekly_pct + '%';
+        weeklyEl.className = pctClass(cu.weekly_pct);
+    } else {
+        weeklyEl.textContent = '--';
+        weeklyEl.className = 'tv';
+    }
 
     // RTK
     var rtk = d.rtk || {};
