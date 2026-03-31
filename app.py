@@ -775,17 +775,17 @@ body {
 
 <!-- Stats Ticker -->
 <div class="ticker" id="ticker">
-    <span>This Week: <span class="tv" id="tk-this-week">--</span></span>
+    <span title="Tokens saved by all tools since your weekly Claude reset">This Week: <span class="tv" id="tk-this-week">--</span></span>
     <span class="sep">|</span>
-    <span>Last Week: <span class="tv" id="tk-last-week">--</span></span>
+    <span title="Total tokens saved during the previous weekly period">Last Week: <span class="tv" id="tk-last-week">--</span></span>
     <span class="sep">|</span>
-    <span>~<span class="tv" id="tk-burn">--</span>/day</span>
+    <span title="Average daily token savings this week">~<span class="tv" id="tk-burn">--</span>/day</span>
     <span class="sep">|</span>
-    <span>Reset: <span class="tv" id="tk-reset">--</span></span>
+    <span title="When your Claude weekly usage allocation resets">Reset: <span class="tv" id="tk-reset">--</span></span>
     <span class="sep">|</span>
-    <span>5-Hour Window: <span id="tk-session-pct" class="tv">--</span></span>
+    <span title="Claude usage in your current 5-hour rolling window">5-Hour Window: <span id="tk-session-pct" class="tv">--</span></span>
     <span class="sep">|</span>
-    <span>Weekly: <span id="tk-weekly-pct" class="tv">--</span></span>
+    <span title="Claude usage across your 7-day rolling period">Weekly: <span id="tk-weekly-pct" class="tv">--</span></span>
 </div>
 
 <!-- Cards -->
