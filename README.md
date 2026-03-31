@@ -15,7 +15,7 @@ Live wallboard for monitoring token savings across your Claude Code toolchain. T
 - **jCodeMunch** -- indexed repos and session savings (filesystem + MCP)
 - **jDocMunch** -- documentation indexing and section retrieval savings (filesystem)
 - **Combined total** with sparkline trends and live activity feed
-- **Stats ticker** -- weekly savings breakdown, daily burn rate, Claude usage percentages, and reset countdown (requires [ccstatusline](https://www.npmjs.com/package/ccstatusline))
+- **Stats ticker** -- weekly savings breakdown, daily burn rate, Claude usage percentages (5-hour, weekly, Sonnet), and reset countdown (reads Claude Code credentials directly, no extra tools needed)
 
 ## Quick start
 
@@ -56,7 +56,7 @@ All settings via environment variables. Copy `.env.example` for reference:
 | `JDOCMUNCH_INDEX_DIR` | `~/.doc-index` | jDocMunch index directory |
 | `JCODEMUNCH_BIN` | `jcodemunch-mcp` | Path to jCodeMunch binary |
 | `SSE_INTERVAL` | `30` | Seconds between SSE pushes |
-| `CCSTATUSLINE_CACHE` | `~/.cache/ccstatusline/usage.json` | ccstatusline usage cache file |
+| `CLAUDE_CREDENTIALS` | `~/.claude/.credentials.json` | Claude Code credentials (for usage API) |
 | `WEEKLY_CACHE_DIR` | `~/.cache/claude-tools-dashboard` | Weekly savings snapshot directory |
 
 ## API

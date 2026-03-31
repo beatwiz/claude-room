@@ -9,8 +9,8 @@ import subprocess
 import time
 from collections import deque
 from datetime import datetime, timezone
-from urllib.request import urlopen
-from urllib.error import URLError
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify
@@ -31,11 +31,16 @@ JDOCMUNCH_INDEX_DIR = os.environ.get("JDOCMUNCH_INDEX_DIR", os.path.join(HOME, "
 JDOCMUNCH_BIN = os.environ.get("JDOCMUNCH_BIN", "jdocmunch-mcp")
 PORT = int(os.environ.get("PORT", "8095"))
 SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "30"))
-CCSTATUSLINE_CACHE = os.environ.get("CCSTATUSLINE_CACHE", os.path.join(HOME, ".cache", "ccstatusline", "usage.json"))
+CLAUDE_CREDENTIALS = os.environ.get("CLAUDE_CREDENTIALS", os.path.join(HOME, ".claude", ".credentials.json"))
+USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_POLL_INTERVAL = 180  # 3 minutes, same as ccstatusline
+USAGE_BACKOFF = 300  # 5 minutes on 429
 WEEKLY_CACHE_DIR = os.environ.get("WEEKLY_CACHE_DIR", os.path.join(HOME, ".cache", "claude-tools-dashboard"))
 
 # Persistent state for sparklines and fallback
 _last_good = {}
+_usage_cache = None
+_usage_cache_time = 0
 _sparkline_buffers = {
     "rtk": deque(maxlen=60),
     "headroom": deque(maxlen=60),
@@ -331,26 +336,59 @@ def collect_jdocmunch():
         return None
 
 
-def collect_claude_usage():
-    """Read ccstatusline cache for Claude usage data."""
+def _read_oauth_token():
+    """Read Claude Code OAuth access token from credentials file."""
     try:
-        if not os.path.exists(CCSTATUSLINE_CACHE):
-            return None
-        # Stale if older than 10 minutes
-        age = time.time() - os.path.getmtime(CCSTATUSLINE_CACHE)
-        if age > 600:
-            return None
-        with open(CCSTATUSLINE_CACHE) as f:
-            data = json.load(f)
-        return {
-            "session_pct": data.get("sessionUsage"),
-            "session_reset": data.get("sessionResetAt"),
-            "weekly_pct": data.get("weeklyUsage"),
-            "weekly_reset": data.get("weeklyResetAt"),
-            "active": True,
-        }
+        with open(CLAUDE_CREDENTIALS) as f:
+            creds = json.load(f)
+        return creds.get("claudeAiOauth", {}).get("accessToken")
     except Exception:
         return None
+
+
+def collect_claude_usage():
+    """Fetch Claude usage from Anthropic API with 3-minute cache."""
+    global _usage_cache, _usage_cache_time
+
+    now = time.time()
+    if _usage_cache and (now - _usage_cache_time) < USAGE_POLL_INTERVAL:
+        return _usage_cache
+
+    token = _read_oauth_token()
+    if not token:
+        return _usage_cache  # return stale cache or None
+
+    try:
+        req = Request(USAGE_API_URL)
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("anthropic-beta", "oauth-2025-04-20")
+        req.add_header("Content-Type", "application/json")
+        with urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+
+        five = data.get("five_hour") or {}
+        seven = data.get("seven_day") or {}
+        sonnet = data.get("seven_day_sonnet") or {}
+
+        result = {
+            "session_pct": five.get("utilization"),
+            "session_reset": five.get("resets_at"),
+            "weekly_pct": seven.get("utilization"),
+            "weekly_reset": seven.get("resets_at"),
+            "sonnet_pct": sonnet.get("utilization"),
+            "sonnet_reset": sonnet.get("resets_at"),
+            "active": True,
+        }
+        _usage_cache = result
+        _usage_cache_time = now
+        return result
+    except HTTPError as e:
+        if e.code == 429:
+            # Back off on rate limit -- extend cache validity
+            _usage_cache_time = now - USAGE_POLL_INTERVAL + USAGE_BACKOFF
+        return _usage_cache
+    except Exception:
+        return _usage_cache
 
 
 def _load_weekly_cache():
@@ -822,6 +860,8 @@ body {
     <span title="Claude usage in your current 5-hour rolling window">5-Hour Window: <span id="tk-session-pct" class="tv">--</span></span>
     <span class="sep">|</span>
     <span title="Claude usage across your 7-day rolling period">Weekly: <span id="tk-weekly-pct" class="tv">--</span></span>
+    <span class="sep">|</span>
+    <span title="Sonnet-only usage across your 7-day rolling period">Sonnet: <span id="tk-sonnet-pct" class="tv">--</span></span>
 </div>
 
 <!-- Cards -->
@@ -1004,6 +1044,14 @@ function updateDashboard(d) {
     } else {
         weeklyEl.textContent = '--';
         weeklyEl.className = 'tv';
+    }
+    var sonnetEl = document.getElementById('tk-sonnet-pct');
+    if (cu.active && cu.sonnet_pct != null) {
+        sonnetEl.textContent = cu.sonnet_pct + '%';
+        sonnetEl.className = pctClass(cu.sonnet_pct);
+    } else {
+        sonnetEl.textContent = '--';
+        sonnetEl.className = 'tv';
     }
 
     // RTK
