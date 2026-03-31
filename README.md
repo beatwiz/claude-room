@@ -2,7 +2,8 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Docker](https://img.shields.io/badge/docker-ready-2496ed?logo=docker&logoColor=white)](Dockerfile)
+[![Docker Hub](https://img.shields.io/docker/v/willluck/claude-tools-dashboard?logo=docker&logoColor=white&label=Docker%20Hub)](https://hub.docker.com/r/willluck/claude-tools-dashboard)
+[![GHCR](https://img.shields.io/badge/ghcr.io-available-2496ed?logo=github&logoColor=white)](https://ghcr.io/will-luck/claude-tools-dashboard)
 
 Live wallboard for monitoring token savings across your Claude Code toolchain. Tracks [RTK](https://github.com/reachingforthejack/rtk), [Headroom](https://github.com/chopratejas/headroom), [jCodeMunch](https://github.com/jgravelle/jcodemunch-mcp), and [jDocMunch](https://github.com/jgravelle/jdocmunch-mcp) in a single-page dashboard with real-time SSE updates.
 
@@ -28,7 +29,24 @@ python app.py
 # Open http://localhost:8095
 ```
 
-### Docker
+### Docker (pre-built)
+
+```bash
+# Docker Hub
+docker run -d --name claude-tools-dashboard \
+  -p 8095:8095 \
+  -v ~/.local/share/rtk:/root/.local/share/rtk:ro \
+  -v ~/.code-index:/root/.code-index:ro \
+  -v ~/.doc-index:/root/.doc-index:ro \
+  -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
+  --network host \
+  willluck/claude-tools-dashboard
+
+# Or from GHCR
+docker run -d ... ghcr.io/will-luck/claude-tools-dashboard
+```
+
+### Docker (build from source)
 
 ```bash
 docker build -t claude-tools-dashboard .
