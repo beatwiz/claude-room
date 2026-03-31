@@ -3,6 +3,7 @@
 import json
 import os
 import glob
+import re
 import sqlite3
 import subprocess
 import time
@@ -62,6 +63,22 @@ def _run(cmd, timeout=2):
         return None
 
 
+_SECRET_PATTERNS = [
+    (re.compile(r'((?:-e|--env)\s+\S*=)\S+'), r'\1***'),
+    (re.compile(r'(\b\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD)\s*=)\S+', re.IGNORECASE), r'\1***'),
+    (re.compile(r'sk-ant-[A-Za-z0-9_-]{8,}'), 'sk-ant-***'),
+]
+
+
+def _sanitise_cmd(cmd):
+    """Redact secrets from shell commands before they reach the frontend."""
+    if not cmd:
+        return cmd
+    for pattern, replacement in _SECRET_PATTERNS:
+        cmd = pattern.sub(replacement, cmd)
+    return cmd
+
+
 def collect_rtk():
     """Read rtk SQLite DB and return stats + history."""
     try:
@@ -97,6 +114,7 @@ def collect_rtk():
             cmd = r["original_cmd"]
             if cmd.startswith("rtk "):
                 cmd = cmd[4:]
+            cmd = _sanitise_cmd(cmd)
             history.append({
                 "time": r["timestamp"],
                 "tool": "rtk",
