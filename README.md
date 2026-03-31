@@ -36,11 +36,13 @@ docker run -d --name claude-tools-dashboard \
   -p 8095:8095 \
   -v ~/.local/share/rtk:/root/.local/share/rtk:ro \
   -v ~/.code-index:/root/.code-index:ro \
+  -v ~/.doc-index:/root/.doc-index:ro \
+  -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
   --network host \
   claude-tools-dashboard
 ```
 
-Use `--network host` so the container can reach the Headroom proxy on localhost. Alternatively, set `HEADROOM_URL` to point at the host IP.
+Use `--network host` so the container can reach the Headroom proxy on localhost. Alternatively, set `HEADROOM_URL` to point at the host IP. The credentials mount is optional -- without it, the usage ticker just shows dashes.
 
 ## Configuration
 
