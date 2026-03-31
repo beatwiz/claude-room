@@ -775,11 +775,11 @@ body {
 
 <!-- Stats Ticker -->
 <div class="ticker" id="ticker">
-    <span title="Tokens saved by all tools since your weekly Claude reset">This Week: <span class="tv" id="tk-this-week">--</span></span>
+    <span title="Tokens saved by all tools since your weekly Claude reset">Saved This Week: <span class="tv" id="tk-this-week">--</span></span>
     <span class="sep">|</span>
-    <span title="Total tokens saved during the previous weekly period">Last Week: <span class="tv" id="tk-last-week">--</span></span>
+    <span title="Total tokens saved during the previous weekly period">Saved Last Week: <span class="tv" id="tk-last-week">--</span></span>
     <span class="sep">|</span>
-    <span title="Average daily token savings this week">~<span class="tv" id="tk-burn">--</span>/day</span>
+    <span title="Average daily token savings this week">Avg: ~<span class="tv" id="tk-burn">--</span>/day</span>
     <span class="sep">|</span>
     <span title="When your Claude weekly usage allocation resets">Reset: <span class="tv" id="tk-reset">--</span></span>
     <span class="sep">|</span>
