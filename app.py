@@ -55,6 +55,12 @@ _jcodemunch_history = []
 _jdocmunch_last_total = 0
 _jdocmunch_last_mtime = 0
 _jdocmunch_history = []
+_last_collect_success = {
+    "rtk": 0.0,
+    "headroom": 0.0,
+    "jcodemunch": 0.0,
+    "jdocmunch": 0.0,
+}
 
 
 def _run(cmd, timeout=2):
@@ -543,8 +549,19 @@ def collect_all():
         if data is not None:
             results[name] = data
             _last_good[name] = data
+            _last_collect_success[name] = time.time()
         else:
             results[name] = _last_good.get(name, {"active": False, "version": "unknown", "total_saved": 0, "history": []})
+
+    now_ts = time.time()
+    for name in collectors:
+        last_ok = _last_collect_success.get(name, 0)
+        if results[name].get("active") and last_ok > 0 and (now_ts - last_ok) < 60:
+            results[name]["health"] = "ok"
+        elif last_ok > 0:
+            results[name]["health"] = "stale"
+        else:
+            results[name]["health"] = "error"
 
     # Build combined saved total
     combined_saved = 0
@@ -844,6 +861,24 @@ body {
 .fill-jdocmunch { background: #a55eea; }
 .stroke-jdocmunch { stroke: #a55eea; }
 .area-jdocmunch { fill: rgba(165, 94, 234, 0.1); }
+.health-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+.health-ok {
+    background: #00ff88;
+    animation: pulse 2s infinite;
+}
+.health-stale {
+    background: #ffcc00;
+}
+.health-error {
+    background: #ff4444;
+}
 
 /* Feed */
 .feed-container {
@@ -999,7 +1034,7 @@ body {
     <!-- RTK -->
     <div class="card" id="rtk-card">
         <div class="card-header">
-            <a href="https://github.com/rtk-ai/rtk" target="_blank" class="card-name">RTK</a>
+            <span class="health-dot health-error" id="rtk-health"></span><a href="https://github.com/rtk-ai/rtk" target="_blank" class="card-name">RTK</a>
             <span class="card-version" id="rtk-version">--</span>
         </div>
         <div class="card-value clr-rtk" id="rtk-value">--</div>
@@ -1015,7 +1050,7 @@ body {
     <!-- Headroom -->
     <div class="card" id="headroom-card">
         <div class="card-header">
-            <a href="https://github.com/chopratejas/headroom" target="_blank" class="card-name">Headroom</a>
+            <span class="health-dot health-error" id="headroom-health"></span><a href="https://github.com/chopratejas/headroom" target="_blank" class="card-name">Headroom</a>
             <span class="card-version" id="headroom-version">--</span>
         </div>
         <div class="card-value clr-headroom" id="headroom-value">--</div>
@@ -1031,7 +1066,7 @@ body {
     <!-- jCodeMunch -->
     <div class="card" id="jcodemunch-card">
         <div class="card-header">
-            <a href="https://github.com/jgravelle/jcodemunch-mcp" target="_blank" class="card-name">jCodeMunch</a>
+            <span class="health-dot health-error" id="jcodemunch-health"></span><a href="https://github.com/jgravelle/jcodemunch-mcp" target="_blank" class="card-name">jCodeMunch</a>
             <span class="card-version" id="jcodemunch-version">--</span>
         </div>
         <div class="card-value clr-jcodemunch" id="jcodemunch-value">--</div>
@@ -1047,7 +1082,7 @@ body {
     <!-- jDocMunch -->
     <div class="card" id="jdocmunch-card">
         <div class="card-header">
-            <a href="https://github.com/jgravelle/jdocmunch-mcp" target="_blank" class="card-name">jDocMunch</a>
+            <span class="health-dot health-error" id="jdocmunch-health"></span><a href="https://github.com/jgravelle/jdocmunch-mcp" target="_blank" class="card-name">jDocMunch</a>
             <span class="card-version" id="jdocmunch-version">--</span>
         </div>
         <div class="card-value clr-jdocmunch" id="jdocmunch-value">--</div>
@@ -1188,6 +1223,9 @@ function updateDashboard(d) {
     var rtk = d.rtk || {};
     var rtkCard = document.getElementById('rtk-card');
     rtkCard.className = rtk.active ? 'card' : 'card inactive';
+    var rtkHealth = rtk.health || 'error';
+    var rtkDot = document.getElementById('rtk-health');
+    if (rtkDot) rtkDot.className = 'health-dot health-' + rtkHealth;
     document.getElementById('rtk-version').textContent = shortVersion(rtk.version);
     document.getElementById('rtk-value').textContent = rtk.active ? formatTokens(rtk.total_saved || 0) : '--';
     document.getElementById('rtk-sub').textContent = 'tokens saved';
@@ -1204,6 +1242,9 @@ function updateDashboard(d) {
     var hr = d.headroom || {};
     var hrCard = document.getElementById('headroom-card');
     hrCard.className = hr.active ? 'card' : 'card inactive';
+    var hrHealth = hr.health || 'error';
+    var hrDot = document.getElementById('headroom-health');
+    if (hrDot) hrDot.className = 'health-dot health-' + hrHealth;
     document.getElementById('headroom-version').textContent = shortVersion(hr.version);
     if (hr.active) {
         document.getElementById('headroom-value').textContent = formatTokens(hr.total_saved || 0);
@@ -1223,6 +1264,9 @@ function updateDashboard(d) {
     var jc = d.jcodemunch || {};
     var jcCard = document.getElementById('jcodemunch-card');
     jcCard.className = jc.active ? 'card' : 'card inactive';
+    var jcHealth = jc.health || 'error';
+    var jcDot = document.getElementById('jcodemunch-health');
+    if (jcDot) jcDot.className = 'health-dot health-' + jcHealth;
     document.getElementById('jcodemunch-version').textContent = shortVersion(jc.version);
     document.getElementById('jcodemunch-value').textContent = jc.active ? formatTokens(jc.total_saved || 0) : '--';
     document.getElementById('jcodemunch-sub').textContent = 'tokens saved';
@@ -1238,6 +1282,9 @@ function updateDashboard(d) {
     var jd = d.jdocmunch || {};
     var jdCard = document.getElementById('jdocmunch-card');
     jdCard.className = jd.active ? 'card' : 'card inactive';
+    var jdHealth = jd.health || 'error';
+    var jdDot = document.getElementById('jdocmunch-health');
+    if (jdDot) jdDot.className = 'health-dot health-' + jdHealth;
     document.getElementById('jdocmunch-version').textContent = shortVersion(jd.version);
     document.getElementById('jdocmunch-value').textContent = jd.active ? formatTokens(jd.total_saved || 0) : '--';
     document.getElementById('jdocmunch-sub').textContent = 'tokens saved';
