@@ -411,6 +411,81 @@ def _save_weekly_cache(data):
         json.dump(data, f, indent=2)
 
 
+def _group_history(entries):
+    """Collapse consecutive same-tool, same-prefix entries within 30s."""
+    if not entries:
+        return entries
+
+    grouped = []
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        # Never collapse entries that saved >1000 tokens
+        if entry.get("saved_tokens", 0) > 1000:
+            grouped.append(entry)
+            i += 1
+            continue
+
+        # Extract command prefix (first word)
+        cmd_parts = (entry.get("cmd") or "").split()
+        prefix = cmd_parts[0] if cmd_parts else ""
+        tool = entry.get("tool", "")
+        entry_time = entry.get("time", "")
+
+        # Collect consecutive entries with same tool + prefix within 30s
+        batch = [entry]
+        j = i + 1
+        while j < len(entries):
+            next_entry = entries[j]
+            # Don't absorb high-savings entries into a group
+            if next_entry.get("saved_tokens", 0) > 1000:
+                break
+            next_parts = (next_entry.get("cmd") or "").split()
+            next_prefix = next_parts[0] if next_parts else ""
+            next_tool = next_entry.get("tool", "")
+
+            if next_tool != tool or next_prefix != prefix:
+                break
+
+            # Check time gap (entries are sorted descending, so earlier entries are later in list)
+            try:
+                t1 = datetime.fromisoformat(entry_time)
+                t2 = datetime.fromisoformat(next_entry.get("time", ""))
+                if abs((t1 - t2).total_seconds()) > 30:
+                    break
+            except (ValueError, TypeError):
+                break
+
+            batch.append(next_entry)
+            j += 1
+
+        if len(batch) == 1:
+            grouped.append(entry)
+        else:
+            total_saved = sum(e.get("saved_tokens", 0) for e in batch)
+            total_pct_weighted = 0
+            total_weight = 0
+            for e in batch:
+                s = e.get("saved_tokens", 0)
+                total_pct_weighted += e.get("saved_pct", 0) * max(s, 1)
+                total_weight += max(s, 1)
+            avg_pct = round(total_pct_weighted / total_weight, 1) if total_weight > 0 else 0
+
+            grouped.append({
+                "time": batch[0].get("time"),
+                "tool": tool,
+                "cmd": f"{len(batch)}x {prefix}",
+                "saved_tokens": total_saved,
+                "saved_pct": avg_pct,
+                "count": len(batch),
+                "grouped": True,
+            })
+
+        i = j
+
+    return grouped
+
+
 def collect_all():
     """Collect from all tools, maintain sparklines and fallbacks."""
     global _last_good
@@ -539,6 +614,7 @@ def collect_all():
 
     # Sort by time descending, limit to 20
     history.sort(key=lambda x: x.get("time", ""), reverse=True)
+    history = _group_history(history)
     history = history[:20]
 
     timestamp = datetime.now(timezone.utc).isoformat()
