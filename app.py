@@ -175,6 +175,7 @@ def collect_headroom():
             data["total_saved"] = tokens.get("saved", 0)
             data["sessions"] = cache.get("active_sessions", 0)
             data["avg_savings_pct"] = round(tokens.get("savings_percent", 0), 1)
+            data["compression_ratio"] = data["avg_savings_pct"]
 
             # Accumulate headroom events in a rolling buffer
             global _headroom_last_total, _headroom_history
@@ -251,6 +252,24 @@ def collect_jcodemunch():
         _jcodemunch_last_mtime = stats_mtime
         _jcodemunch_last_total = total_tokens_saved
 
+        # Freshness: 100% if active in last 5 min, decays to 0% over 60 min
+        stats_path_fresh = os.path.join(index_dir, "session_stats.json")
+        if os.path.exists(stats_path_fresh):
+            elapsed_min = (time.time() - os.path.getmtime(stats_path_fresh)) / 60
+            freshness = max(0, round(100 - (elapsed_min / 60 * 100)))
+        else:
+            freshness = 0
+
+        if freshness > 0:
+            if elapsed_min < 1:
+                freshness_label = "just now"
+            elif elapsed_min < 60:
+                freshness_label = f"{int(elapsed_min)}m ago"
+            else:
+                freshness_label = f"{int(elapsed_min / 60)}h ago"
+        else:
+            freshness_label = "idle"
+
         return {
             "active": repos_indexed > 0 or total_tokens_saved > 0,
             "total_saved": total_tokens_saved,
@@ -258,6 +277,8 @@ def collect_jcodemunch():
             "index_size_mb": index_size_mb,
             "version": version or "unknown",
             "history": list(_jcodemunch_history),
+            "freshness": freshness,
+            "freshness_label": freshness_label,
         }
     except Exception:
         return None
@@ -324,6 +345,23 @@ def collect_jdocmunch():
         _jdocmunch_last_mtime = newest_mtime
         _jdocmunch_last_total = total_tokens_saved
 
+        # Freshness: 100% if active in last 5 min, decays to 0% over 60 min
+        if newest_mtime > 0:
+            elapsed_min = (time.time() - newest_mtime) / 60
+            freshness = max(0, round(100 - (elapsed_min / 60 * 100)))
+        else:
+            freshness = 0
+
+        if freshness > 0:
+            if elapsed_min < 1:
+                freshness_label = "just now"
+            elif elapsed_min < 60:
+                freshness_label = f"{int(elapsed_min)}m ago"
+            else:
+                freshness_label = f"{int(elapsed_min / 60)}h ago"
+        else:
+            freshness_label = "idle"
+
         return {
             "active": docs_indexed > 0 or total_tokens_saved > 0,
             "total_saved": total_tokens_saved,
@@ -331,6 +369,8 @@ def collect_jdocmunch():
             "index_size_mb": index_size_mb,
             "version": version,
             "history": list(_jdocmunch_history),
+            "freshness": freshness,
+            "freshness_label": freshness_label,
         }
     except Exception:
         return None
@@ -1168,7 +1208,7 @@ function updateDashboard(d) {
     if (hr.active) {
         document.getElementById('headroom-value').textContent = formatTokens(hr.total_saved || 0);
         document.getElementById('headroom-sub').textContent = 'tokens saved';
-        document.getElementById('headroom-bar').style.width = (hr.avg_savings_pct || 0) + '%';
+        document.getElementById('headroom-bar').style.width = (hr.compression_ratio || hr.avg_savings_pct || 0) + '%';
         document.getElementById('headroom-stats').innerHTML =
             '<span><span class="label">sessions</span> <span class="val">' + (hr.sessions || 0) + '</span></span>';
     } else {
@@ -1186,11 +1226,12 @@ function updateDashboard(d) {
     document.getElementById('jcodemunch-version').textContent = shortVersion(jc.version);
     document.getElementById('jcodemunch-value').textContent = jc.active ? formatTokens(jc.total_saved || 0) : '--';
     document.getElementById('jcodemunch-sub').textContent = 'tokens saved';
-    document.getElementById('jcodemunch-bar').style.width = '0%';
+    document.getElementById('jcodemunch-bar').style.width = (jc.freshness || 0) + '%';
     if (jc.active) {
         document.getElementById('jcodemunch-stats').innerHTML =
             '<span><span class="label">repos</span> <span class="val">' + (jc.repos_indexed || 0) + '</span></span>' +
-            '<span><span class="label">indexed</span> <span class="val">' + (jc.index_size_mb || 0) + 'MB</span></span>';
+            '<span><span class="label">indexed</span> <span class="val">' + (jc.index_size_mb || 0) + 'MB</span></span>' +
+            '<span><span class="label">active</span> <span class="val">' + (jc.freshness_label || 'idle') + '</span></span>';
     }
 
     // jDocMunch
@@ -1200,11 +1241,12 @@ function updateDashboard(d) {
     document.getElementById('jdocmunch-version').textContent = shortVersion(jd.version);
     document.getElementById('jdocmunch-value').textContent = jd.active ? formatTokens(jd.total_saved || 0) : '--';
     document.getElementById('jdocmunch-sub').textContent = 'tokens saved';
-    document.getElementById('jdocmunch-bar').style.width = '0%';
+    document.getElementById('jdocmunch-bar').style.width = (jd.freshness || 0) + '%';
     if (jd.active) {
         document.getElementById('jdocmunch-stats').innerHTML =
             '<span><span class="label">docs</span> <span class="val">' + (jd.docs_indexed || 0) + '</span></span>' +
-            '<span><span class="label">indexed</span> <span class="val">' + (jd.index_size_mb || 0) + 'MB</span></span>';
+            '<span><span class="label">indexed</span> <span class="val">' + (jd.index_size_mb || 0) + 'MB</span></span>' +
+            '<span><span class="label">active</span> <span class="val">' + (jd.freshness_label || 'idle') + '</span></span>';
     }
 
     // Sparklines
