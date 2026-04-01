@@ -707,7 +707,7 @@ HTML = """<!DOCTYPE html>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { height: 100%; overflow: hidden; }
+html, body { height: 100%; overflow: hidden; overflow-y: auto; }
 body {
     background: #0a0a1a;
     font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
@@ -975,10 +975,10 @@ body {
     align-items: center;
     justify-content: center;
     flex-wrap: wrap;
-    gap: 4px 6px;
+    gap: 6px 8px;
     padding: 6px 0;
     margin-bottom: 16px;
-    font-size: 12px;
+    font-size: 13px;
     color: #889;
 }
 .ticker .sep {
@@ -1369,7 +1369,7 @@ function updateClock() {
     var day = String(now.getDate()).padStart(2, '0');
     var mon = months[now.getMonth()];
     var yr = now.getFullYear();
-    document.getElementById('clock').textContent = h + ':' + m + ':' + s + ' \\u25AA ' + day + ' ' + mon + ' ' + yr;
+    document.getElementById('clock').textContent = h + ':' + m + ':' + s + ' \u25aa ' + day + ' ' + mon + ' ' + yr;
 }
 setInterval(updateClock, 1000);
 updateClock();
