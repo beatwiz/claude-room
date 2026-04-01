@@ -671,7 +671,6 @@ def collect_all():
 
     # Sort by time descending, limit to 20
     history.sort(key=lambda x: x.get("time", ""), reverse=True)
-    history = _group_history(history)
     history = history[:20]
 
     timestamp = datetime.now(timezone.utc).isoformat()
