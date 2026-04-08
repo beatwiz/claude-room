@@ -62,6 +62,35 @@ _last_collect_success = {
     "jdocmunch": 0.0,
 }
 
+# Cached version strings. resolve_versions_once() populates this at module
+# import, and the collectors read from it on every tick to avoid subprocess
+# on the hot path.
+_cached_versions = {
+    "rtk": None,
+    "jcodemunch": None,
+    "jdocmunch": None,
+}
+
+
+def resolve_versions_once():
+    """Resolve tool versions once. Called at module-level collector startup."""
+    rtk_v = _run([RTK_BIN, "--version"])
+    _cached_versions["rtk"] = rtk_v if rtk_v else "unknown"
+
+    jc_v = _run([JCODEMUNCH_BIN, "--version"])
+    _cached_versions["jcodemunch"] = jc_v if jc_v else "unknown"
+
+    jd_v = _run([JDOCMUNCH_BIN, "--version"])
+    if not jd_v:
+        raw = _run(["pipx", "list", "--short"])
+        if raw:
+            for line in raw.splitlines():
+                if "jdocmunch" in line:
+                    parts = line.strip().split()
+                    jd_v = parts[1] if len(parts) > 1 else None
+                    break
+    _cached_versions["jdocmunch"] = jd_v if jd_v else "unknown"
+
 
 def _run(cmd, timeout=2):
     """Run a command and return stdout, or None on failure."""
@@ -72,6 +101,11 @@ def _run(cmd, timeout=2):
         return result.stdout.strip() if result.returncode == 0 else None
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
+
+
+# Populate the version cache at module import time. Task 4 will move this call
+# into a background thread but for now it runs once at startup.
+resolve_versions_once()
 
 
 _SECRET_PATTERNS = [
@@ -136,10 +170,8 @@ def collect_rtk():
 
         conn.close()
 
-        # Version
-        version = _run([RTK_BIN, "--version"])
-        if version:
-            version = version.strip()
+        # Version (cached at startup)
+        version = _cached_versions.get("rtk") or "unknown"
 
         return {
             "active": True,
@@ -230,7 +262,7 @@ def collect_jcodemunch():
         index_size_bytes = sum(os.path.getsize(f) for f in db_files if os.path.exists(f))
         index_size_mb = round(index_size_bytes / (1024 * 1024), 1)
 
-        version = _run([JCODEMUNCH_BIN, "--version"])
+        version = _cached_versions.get("jcodemunch") or "unknown"
 
         # Detect activity via session_stats.json mtime (updated on every MCP call).
         global _jcodemunch_last_total, _jcodemunch_last_mtime, _jcodemunch_history
@@ -308,16 +340,8 @@ def collect_jdocmunch():
         docs_indexed = len(index_files)
         index_size_mb = round(sum(os.path.getsize(f) for f in index_files) / (1024 * 1024), 1)
 
-        v = _run([JDOCMUNCH_BIN, "--version"])
-        if not v:
-            raw = _run(["pipx", "list", "--short"])
-            if raw:
-                for line in raw.splitlines():
-                    if "jdocmunch" in line:
-                        parts = line.strip().split()
-                        v = parts[1] if len(parts) > 1 else None
-                        break
-        version = v
+        # Version (cached at startup)
+        version = _cached_versions.get("jdocmunch") or "unknown"
 
         # _savings.json updates on every get_section call (token savings).
         # Index JSON files update on re-index. Check both for activity.
