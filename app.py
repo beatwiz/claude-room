@@ -783,6 +783,7 @@ body {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 12px;
+    position: relative;
 }
 .card-name {
     font-size: 12px;
@@ -864,9 +865,10 @@ body {
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    display: inline-block;
-    margin-right: 6px;
-    vertical-align: middle;
+    position: absolute;
+    left: -14px;
+    top: 50%;
+    transform: translateY(-50%);
 }
 .health-ok {
     background: #00ff88;
@@ -922,6 +924,8 @@ body {
     display: flex;
     gap: 16px;
     align-items: center;
+    border-left: 2px solid transparent;
+    padding-left: 14px;
 }
 .feed-time {
     color: #666;
@@ -953,12 +957,10 @@ body {
     opacity: 0.6;
 }
 .feed-line.highlight {
-    border-left: 2px solid;
-    padding-left: 14px;
+    border-left-color: currentColor;
 }
 .feed-line.grouped {
-    border-left: 2px solid;
-    padding-left: 14px;
+    border-left-color: currentColor;
     font-style: italic;
 }
 
@@ -1336,7 +1338,7 @@ function updateDashboard(d) {
         var lineClasses = 'feed-line';
         if (h.saved_tokens === 0 && (h.saved_pct === 0 || !h.saved_pct)) {
             lineClasses += ' muted';
-        } else if (h.saved_tokens > 1000) {
+        } else if (h.saved_tokens > 0) {
             lineClasses += ' highlight';
         }
         if (h.grouped) {
