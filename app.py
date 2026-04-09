@@ -6,6 +6,7 @@ import glob
 import re
 import sqlite3
 import subprocess
+import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -30,7 +31,8 @@ JCODEMUNCH_BIN = os.environ.get("JCODEMUNCH_BIN", "jcodemunch-mcp")
 JDOCMUNCH_INDEX_DIR = os.environ.get("JDOCMUNCH_INDEX_DIR", os.path.join(HOME, ".doc-index"))
 JDOCMUNCH_BIN = os.environ.get("JDOCMUNCH_BIN", "jdocmunch-mcp")
 PORT = int(os.environ.get("PORT", "8095"))
-SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "30"))
+SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "2"))
+COLLECTOR_INTERVAL = float(os.environ.get("COLLECTOR_INTERVAL", "0.25"))
 CLAUDE_CREDENTIALS = os.environ.get("CLAUDE_CREDENTIALS", os.path.join(HOME, ".claude", ".credentials.json"))
 USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_POLL_INTERVAL = 180  # 3 minutes, same as ccstatusline
@@ -101,11 +103,6 @@ def _run(cmd, timeout=2):
         return result.stdout.strip() if result.returncode == 0 else None
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
-
-
-# Populate the version cache at module import time. Task 4 will move this call
-# into a background thread but for now it runs once at startup.
-resolve_versions_once()
 
 
 _SECRET_PATTERNS = [
@@ -717,6 +714,46 @@ def collect_all():
             "week_is_fresh": week_is_fresh,
         },
     }
+
+
+class DashboardCollector(threading.Thread):
+    """Background daemon that ticks COLLECTOR_INTERVAL seconds.
+
+    On each tick: runs the four tool collectors via collect_all() and
+    stores the resulting payload as a shared snapshot under a lock.
+    Version strings are resolved once at startup and cached in
+    _cached_versions so the hot path does no subprocess work.
+    """
+
+    def __init__(self):
+        super().__init__(daemon=True, name="DashboardCollector")
+        self._lock = threading.Lock()
+        self._snapshot = None
+
+    def run(self):
+        try:
+            resolve_versions_once()
+        except Exception as exc:
+            print(f"[collector] version resolution failed: {exc}", flush=True)
+
+        while True:
+            try:
+                payload = collect_all()
+                with self._lock:
+                    self._snapshot = payload
+            except Exception as exc:
+                # Never die; next tick will retry. Print for journalctl.
+                print(f"[collector] tick failed: {exc}", flush=True)
+            time.sleep(COLLECTOR_INTERVAL)
+
+    def snapshot(self):
+        """Return the most recent snapshot (or None if not yet collected)."""
+        with self._lock:
+            return self._snapshot
+
+
+_collector = DashboardCollector()
+_collector.start()
 
 
 # --- HTML Frontend ---
