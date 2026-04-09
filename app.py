@@ -1382,7 +1382,7 @@ function updateDashboard(d) {
     var feedEl = document.getElementById('feed');
     var hist = d.history || [];
     var lines = [];
-    for (var j = 0; j < hist.length && j < 20; j++) {
+    for (var j = 0; j < hist.length && j < 100; j++) {
         var h = hist[j];
         var toolClr = TOOL_COLOURS[h.tool] || '#888';
         var savingsClass = 'info';
