@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 .env
+
+# Internal design artefacts (kept privately, not for the public repo)
+docs/superpowers/
+.superpowers/
+.worktrees/
