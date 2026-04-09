@@ -75,7 +75,7 @@ _cached_versions = {
 
 
 def resolve_versions_once():
-    """Resolve tool versions once. Called at module-level collector startup."""
+    """Resolve tool versions once. Called by DashboardCollector.run() at thread startup."""
     rtk_v = _run([RTK_BIN, "--version"])
     _cached_versions["rtk"] = rtk_v if rtk_v else "unknown"
 
@@ -1470,7 +1470,7 @@ def health():
 def events():
     def stream():
         while True:
-            payload = collect_all()
+            payload = _collector.snapshot() or {}
             yield f"data: {json.dumps(payload)}\n\n"
             time.sleep(SSE_INTERVAL)
 
