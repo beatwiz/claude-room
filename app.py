@@ -566,59 +566,91 @@ def _group_history(entries):
 def _flatten_snapshot(snap):
     """Flatten the collector snapshot to a status-line-friendly dict.
 
-    Contract pinned by tests in tests/test_app.py. Returns the stable
-    not-ready shape when snap is None.
+    Contract pinned by tests in tests/test_app.py. Returns a stable
+    45-key shape whether the collector has ticked (snap is a dict) or
+    not (snap is None), and defensively defaults every sub-object so
+    a partial snapshot never raises KeyError.
+
+    Numeric fields default to 0. Booleans default to False. Health
+    defaults to "error", version to "unknown", freshness_label to
+    "idle". Claude usage fields default to None (not zero) so the
+    status line can distinguish "API not fetched" from "zero
+    utilisation".
     """
-    if snap is None:
-        return {
-            "ready": False,
-            "timestamp": None,
-            "session_pct": None,
-            "session_reset": None,
-            "weekly_pct": None,
-            "weekly_reset": None,
-            "weekly_reset_display": None,
-            "sonnet_pct": None,
-            "sonnet_reset": None,
-            "combined_saved": 0,
-            "this_week_saved": 0,
-            "last_week_saved": 0,
-            "burn_rate_daily": 0,
-            "week_is_fresh": False,
-            "rtk_active": False,
-            "rtk_health": "error",
-            "rtk_version": "unknown",
-            "rtk_saved": 0,
-            "rtk_delta": 0,
-            "rtk_commands": 0,
-            "rtk_avg_pct": 0,
-            "headroom_active": False,
-            "headroom_health": "error",
-            "headroom_version": "unknown",
-            "headroom_saved": 0,
-            "headroom_delta": 0,
-            "headroom_sessions": 0,
-            "jcodemunch_active": False,
-            "jcodemunch_health": "error",
-            "jcodemunch_version": "unknown",
-            "jcodemunch_saved": 0,
-            "jcodemunch_delta": 0,
-            "jcodemunch_repos_indexed": 0,
-            "jcodemunch_index_size_mb": 0,
-            "jcodemunch_freshness": 0,
-            "jcodemunch_freshness_label": "idle",
-            "jdocmunch_active": False,
-            "jdocmunch_health": "error",
-            "jdocmunch_version": "unknown",
-            "jdocmunch_saved": 0,
-            "jdocmunch_delta": 0,
-            "jdocmunch_docs_indexed": 0,
-            "jdocmunch_index_size_mb": 0,
-            "jdocmunch_freshness": 0,
-            "jdocmunch_freshness_label": "idle",
-        }
-    # Happy path implemented in Task 3
-    raise NotImplementedError("happy path lands in Task 3")
+    ready = snap is not None
+    snap = snap or {}
+
+    claude = snap.get("claude_usage") or {}
+    weekly = snap.get("weekly") or {}
+    sparklines = snap.get("sparklines") or {}
+
+    rtk = snap.get("rtk") or {}
+    headroom = snap.get("headroom") or {}
+    jcm = snap.get("jcodemunch") or {}
+    jdm = snap.get("jdocmunch") or {}
+
+    spark_rtk = sparklines.get("rtk") or {}
+    spark_hr = sparklines.get("headroom") or {}
+    spark_jcm = sparklines.get("jcodemunch") or {}
+    spark_jdm = sparklines.get("jdocmunch") or {}
+
+    claude_active = claude.get("active") is True
+    def _claude(key):
+        return claude.get(key) if claude_active else None
+
+    return {
+        "ready": ready,
+        "timestamp": snap.get("timestamp"),
+
+        "session_pct": _claude("session_pct"),
+        "session_reset": _claude("session_reset"),
+        "weekly_pct": _claude("weekly_pct"),
+        "weekly_reset": _claude("weekly_reset"),
+        "weekly_reset_display": weekly.get("reset_display") or None,
+        "sonnet_pct": _claude("sonnet_pct"),
+        "sonnet_reset": _claude("sonnet_reset"),
+
+        "combined_saved": snap.get("combined_saved", 0),
+        "this_week_saved": weekly.get("this_week", 0),
+        "last_week_saved": weekly.get("last_week", 0),
+        "burn_rate_daily": weekly.get("burn_rate_daily", 0),
+        "week_is_fresh": weekly.get("week_is_fresh", False),
+
+        "rtk_active": rtk.get("active", False),
+        "rtk_health": rtk.get("health", "error"),
+        "rtk_version": rtk.get("version", "unknown"),
+        "rtk_saved": rtk.get("total_saved", 0),
+        "rtk_delta": spark_rtk.get("delta", 0),
+        "rtk_commands": rtk.get("total_commands", 0),
+        "rtk_avg_pct": rtk.get("avg_savings_pct", 0),
+
+        "headroom_active": headroom.get("active", False),
+        "headroom_health": headroom.get("health", "error"),
+        "headroom_version": headroom.get("version", "unknown"),
+        "headroom_saved": headroom.get("total_saved", 0),
+        "headroom_delta": spark_hr.get("delta", 0),
+        "headroom_sessions": headroom.get("sessions", 0),
+
+        "jcodemunch_active": jcm.get("active", False),
+        "jcodemunch_health": jcm.get("health", "error"),
+        "jcodemunch_version": jcm.get("version", "unknown"),
+        "jcodemunch_saved": jcm.get("total_saved", 0),
+        "jcodemunch_delta": spark_jcm.get("delta", 0),
+        "jcodemunch_repos_indexed": jcm.get("repos_indexed", 0),
+        "jcodemunch_index_size_mb": jcm.get("index_size_mb", 0),
+        "jcodemunch_freshness": jcm.get("freshness", 0),
+        "jcodemunch_freshness_label": jcm.get("freshness_label", "idle"),
+
+        "jdocmunch_active": jdm.get("active", False),
+        "jdocmunch_health": jdm.get("health", "error"),
+        "jdocmunch_version": jdm.get("version", "unknown"),
+        "jdocmunch_saved": jdm.get("total_saved", 0),
+        "jdocmunch_delta": spark_jdm.get("delta", 0),
+        "jdocmunch_docs_indexed": jdm.get("docs_indexed", 0),
+        "jdocmunch_index_size_mb": jdm.get("index_size_mb", 0),
+        "jdocmunch_freshness": jdm.get("freshness", 0),
+        "jdocmunch_freshness_label": jdm.get("freshness_label", "idle"),
+    }
 
 
 def collect_all():

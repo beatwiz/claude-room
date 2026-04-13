@@ -110,3 +110,187 @@ def test_flatten_snapshot_none_returns_ready_false():
     assert flat["jdocmunch_index_size_mb"] == 0
     assert flat["jdocmunch_freshness"] == 0
     assert flat["jdocmunch_freshness_label"] == "idle"
+
+
+# Hand-built "full" snapshot used by several tests below. Every field the
+# flattener reads from is populated with a distinct, recognisable value so
+# a wrong mapping produces a wrong assertion.
+FULL_SNAP = {
+    "timestamp": "2026-04-13T10:37:47.613296+00:00",
+    "combined_saved": 123456,
+    "claude_usage": {
+        "active": True,
+        "session_pct": 42,
+        "session_reset": "2026-04-13T15:00:00+00:00",
+        "weekly_pct": 18,
+        "weekly_reset": "2026-04-17T15:00:00+00:00",
+        "sonnet_pct": 6,
+        "sonnet_reset": "2026-04-17T15:00:00+00:00",
+    },
+    "weekly": {
+        "this_week": 8000,
+        "last_week": 12000,
+        "burn_rate_daily": 1200,
+        "reset_display": "Thu 17 Apr 15:00",
+        "week_is_fresh": False,
+    },
+    "rtk": {
+        "active": True,
+        "health": "ok",
+        "version": "0.3.1",
+        "total_saved": 50000,
+        "total_commands": 1234,
+        "avg_savings_pct": 73.5,
+    },
+    "headroom": {
+        "active": True,
+        "health": "ok",
+        "version": "1.0.0",
+        "total_saved": 40000,
+        "sessions": 3,
+    },
+    "jcodemunch": {
+        "active": True,
+        "health": "ok",
+        "version": "2.1.0",
+        "total_saved": 20000,
+        "repos_indexed": 12,
+        "index_size_mb": 48.3,
+        "freshness": 87,
+        "freshness_label": "3m ago",
+    },
+    "jdocmunch": {
+        "active": True,
+        "health": "ok",
+        "version": "1.0.0",
+        "total_saved": 13456,
+        "docs_indexed": 5,
+        "index_size_mb": 4.1,
+        "freshness": 40,
+        "freshness_label": "24m ago",
+    },
+    "sparklines": {
+        "rtk": {"delta": 42, "points": []},
+        "headroom": {"delta": 10, "points": []},
+        "jcodemunch": {"delta": 0, "points": []},
+        "jdocmunch": {"delta": 0, "points": []},
+    },
+}
+
+
+def test_flatten_snapshot_full_payload():
+    """Happy path: full snapshot maps to every contract key with the expected values."""
+    import app
+
+    flat = app._flatten_snapshot(FULL_SNAP)
+
+    assert set(flat.keys()) == set(CONTRACT_KEYS)
+
+    assert flat["ready"] is True
+    assert flat["timestamp"] == "2026-04-13T10:37:47.613296+00:00"
+
+    # Claude usage
+    assert flat["session_pct"] == 42
+    assert flat["session_reset"] == "2026-04-13T15:00:00+00:00"
+    assert flat["weekly_pct"] == 18
+    assert flat["weekly_reset"] == "2026-04-17T15:00:00+00:00"
+    assert flat["weekly_reset_display"] == "Thu 17 Apr 15:00"
+    assert flat["sonnet_pct"] == 6
+    assert flat["sonnet_reset"] == "2026-04-17T15:00:00+00:00"
+
+    # Combined/weekly savings
+    assert flat["combined_saved"] == 123456
+    assert flat["this_week_saved"] == 8000
+    assert flat["last_week_saved"] == 12000
+    assert flat["burn_rate_daily"] == 1200
+    assert flat["week_is_fresh"] is False
+
+    # rtk
+    assert flat["rtk_active"] is True
+    assert flat["rtk_health"] == "ok"
+    assert flat["rtk_version"] == "0.3.1"
+    assert flat["rtk_saved"] == 50000
+    assert flat["rtk_delta"] == 42
+    assert flat["rtk_commands"] == 1234
+    assert flat["rtk_avg_pct"] == 73.5
+
+    # headroom
+    assert flat["headroom_active"] is True
+    assert flat["headroom_health"] == "ok"
+    assert flat["headroom_version"] == "1.0.0"
+    assert flat["headroom_saved"] == 40000
+    assert flat["headroom_delta"] == 10
+    assert flat["headroom_sessions"] == 3
+
+    # jcodemunch
+    assert flat["jcodemunch_active"] is True
+    assert flat["jcodemunch_health"] == "ok"
+    assert flat["jcodemunch_version"] == "2.1.0"
+    assert flat["jcodemunch_saved"] == 20000
+    assert flat["jcodemunch_delta"] == 0
+    assert flat["jcodemunch_repos_indexed"] == 12
+    assert flat["jcodemunch_index_size_mb"] == 48.3
+    assert flat["jcodemunch_freshness"] == 87
+    assert flat["jcodemunch_freshness_label"] == "3m ago"
+
+    # jdocmunch
+    assert flat["jdocmunch_active"] is True
+    assert flat["jdocmunch_health"] == "ok"
+    assert flat["jdocmunch_version"] == "1.0.0"
+    assert flat["jdocmunch_saved"] == 13456
+    assert flat["jdocmunch_delta"] == 0
+    assert flat["jdocmunch_docs_indexed"] == 5
+    assert flat["jdocmunch_index_size_mb"] == 4.1
+    assert flat["jdocmunch_freshness"] == 40
+    assert flat["jdocmunch_freshness_label"] == "24m ago"
+
+
+def test_flatten_snapshot_inactive_claude_usage():
+    """When claude_usage.active is False, all six claude fields are None (not zero)."""
+    import app
+
+    snap = dict(FULL_SNAP)
+    snap["claude_usage"] = {"active": False}
+
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["ready"] is True  # collector has ticked; claude just hasn't replied
+    assert flat["session_pct"] is None
+    assert flat["session_reset"] is None
+    assert flat["weekly_pct"] is None
+    assert flat["weekly_reset"] is None
+    assert flat["sonnet_pct"] is None
+    assert flat["sonnet_reset"] is None
+    # weekly_reset_display is derived from snap["weekly"]["reset_display"], which is still present
+    assert flat["weekly_reset_display"] == "Thu 17 Apr 15:00"
+
+
+def test_flatten_snapshot_missing_sparklines():
+    """When the sparklines key is missing, all *_delta default to 0 without raising."""
+    import app
+
+    snap = {k: v for k, v in FULL_SNAP.items() if k != "sparklines"}
+
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["rtk_delta"] == 0
+    assert flat["headroom_delta"] == 0
+    assert flat["jcodemunch_delta"] == 0
+    assert flat["jdocmunch_delta"] == 0
+    # Other rtk fields still work
+    assert flat["rtk_saved"] == 50000
+
+
+def test_flatten_snapshot_missing_weekly():
+    """When the weekly key is missing, weekly fields default cleanly."""
+    import app
+
+    snap = {k: v for k, v in FULL_SNAP.items() if k != "weekly"}
+
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["this_week_saved"] == 0
+    assert flat["last_week_saved"] == 0
+    assert flat["burn_rate_daily"] == 0
+    assert flat["week_is_fresh"] is False
+    assert flat["weekly_reset_display"] is None
