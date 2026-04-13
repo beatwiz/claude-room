@@ -1476,11 +1476,17 @@ function updateDashboard(d) {
     if (hrDot) hrDot.className = 'health-dot health-' + hrHealth;
     document.getElementById('headroom-version').textContent = shortVersion(hr.version);
     if (hr.active) {
-        document.getElementById('headroom-value').textContent = formatTokens(hr.total_saved || 0);
-        document.getElementById('headroom-sub').textContent = 'tokens saved';
+        // Show lifetime tokens saved as the big number (117M territory)
+        var hrLifetime = hr.lifetime_saved || hr.total_saved || 0;
+        var hrLifetimeUsd = hr.lifetime_saved_usd || 0;
+        var hrSessionUsd = hr.session_saved_usd || 0;
+        document.getElementById('headroom-value').textContent = formatTokens(hrLifetime);
+        document.getElementById('headroom-sub').textContent = 'lifetime · $' + hrLifetimeUsd.toFixed(2) + ' saved';
         document.getElementById('headroom-bar').style.width = (hr.compression_ratio || hr.avg_savings_pct || 0) + '%';
         document.getElementById('headroom-stats').innerHTML =
-            '<span><span class="label">sessions</span> <span class="val">' + (hr.sessions || 0) + '</span></span>';
+            '<span><span class="label">session</span> <span class="val">$' + hrSessionUsd.toFixed(2) + '</span></span>' +
+            '<span><span class="label">cache</span> <span class="val">' + Math.round(hr.cache_hit_rate || 0) + '%</span></span>' +
+            '<span><span class="label">req</span> <span class="val">' + (hr.requests_total || 0) + '</span></span>';
     } else {
         document.getElementById('headroom-value').textContent = '--';
         document.getElementById('headroom-sub').textContent = 'awaiting first session';
