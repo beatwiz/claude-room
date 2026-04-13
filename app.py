@@ -563,6 +563,64 @@ def _group_history(entries):
     return grouped
 
 
+def _flatten_snapshot(snap):
+    """Flatten the collector snapshot to a status-line-friendly dict.
+
+    Contract pinned by tests in tests/test_app.py. Returns the stable
+    not-ready shape when snap is None.
+    """
+    if snap is None:
+        return {
+            "ready": False,
+            "timestamp": None,
+            "session_pct": None,
+            "session_reset": None,
+            "weekly_pct": None,
+            "weekly_reset": None,
+            "weekly_reset_display": None,
+            "sonnet_pct": None,
+            "sonnet_reset": None,
+            "combined_saved": 0,
+            "this_week_saved": 0,
+            "last_week_saved": 0,
+            "burn_rate_daily": 0,
+            "week_is_fresh": False,
+            "rtk_active": False,
+            "rtk_health": "error",
+            "rtk_version": "unknown",
+            "rtk_saved": 0,
+            "rtk_delta": 0,
+            "rtk_commands": 0,
+            "rtk_avg_pct": 0,
+            "headroom_active": False,
+            "headroom_health": "error",
+            "headroom_version": "unknown",
+            "headroom_saved": 0,
+            "headroom_delta": 0,
+            "headroom_sessions": 0,
+            "jcodemunch_active": False,
+            "jcodemunch_health": "error",
+            "jcodemunch_version": "unknown",
+            "jcodemunch_saved": 0,
+            "jcodemunch_delta": 0,
+            "jcodemunch_repos_indexed": 0,
+            "jcodemunch_index_size_mb": 0,
+            "jcodemunch_freshness": 0,
+            "jcodemunch_freshness_label": "idle",
+            "jdocmunch_active": False,
+            "jdocmunch_health": "error",
+            "jdocmunch_version": "unknown",
+            "jdocmunch_saved": 0,
+            "jdocmunch_delta": 0,
+            "jdocmunch_docs_indexed": 0,
+            "jdocmunch_index_size_mb": 0,
+            "jdocmunch_freshness": 0,
+            "jdocmunch_freshness_label": "idle",
+        }
+    # Happy path implemented in Task 3
+    raise NotImplementedError("happy path lands in Task 3")
+
+
 def collect_all():
     """Collect from all tools, maintain sparklines and fallbacks."""
     global _last_good
