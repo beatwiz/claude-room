@@ -734,11 +734,16 @@ def collect_all():
         else:
             results[name]["health"] = "error"
 
-    # Build combined saved total
+    # Build combined saved total.
+    # For headroom, prefer lifetime_saved (persistent across process restarts)
+    # over total_saved (which is the in-memory stats-cycle counter — underreported).
     combined_saved = 0
     for name in collectors:
         tool_data = results[name]
-        combined_saved += tool_data.get("total_saved", 0)
+        if name == "headroom":
+            combined_saved += tool_data.get("lifetime_saved") or tool_data.get("total_saved", 0)
+        else:
+            combined_saved += tool_data.get("total_saved", 0)
 
     # Weekly savings tracking
     claude_usage = collect_claude_usage()
@@ -840,10 +845,18 @@ def collect_all():
     if "history" in results.get("jdocmunch", {}):
         history.extend(results["jdocmunch"]["history"])
 
-    # Sort by time descending, collapse bursts, limit to 100
+    # Sort by time descending, collapse bursts, limit to 50
     history.sort(key=lambda x: x.get("time", ""), reverse=True)
     history = _group_history(history)
-    history = history[:100]
+    history = history[:50]
+
+    # Drop per-tool history lists after merging — the HTML dashboard reads
+    # the merged top-level `history` only, and the /api/status flat contract
+    # doesn't reference per-tool histories. This cuts ~15KB per SSE tick.
+    for tool_name in ("rtk", "headroom", "jcodemunch", "jdocmunch"):
+        tool_dict = results.get(tool_name)
+        if isinstance(tool_dict, dict) and "history" in tool_dict:
+            del tool_dict["history"]
 
     timestamp = datetime.now(timezone.utc).isoformat()
 
