@@ -99,6 +99,19 @@ Single-file Flask app (`app.py`) that:
 
 The frontend uses vanilla JS with CSS custom properties for theming. Sparkline charts are drawn with inline SVG. No external dependencies beyond Flask.
 
+## Tests
+
+Install dev dependencies and run pytest from the repo root:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+The test suite covers the `_flatten_snapshot` helper contract and the
+`GET /api/status` route. It does not exercise the individual
+`collect_*` functions or the background collector thread.
+
 ## License
 
 MIT

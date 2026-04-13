@@ -7,3 +7,6 @@ screenshots/
 docs/
 README.md
 LICENSE
+requirements-dev.txt
+tests/
+pytest.ini
