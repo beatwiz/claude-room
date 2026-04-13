@@ -607,20 +607,22 @@ def _group_history(entries):
     return grouped
 
 
-def _same_reset_window(a, b):
+def _same_reset_window(a, b, tolerance_seconds=5):
     """Return True iff two ISO-8601 resets_at timestamps refer to the same reset window.
 
     Anthropic's usage API returns resets_at with sub-second precision that
     jitters (observed drift up to ~1s) between calls even within the same
-    week. Compare truncated to the minute so drift does not trigger false
-    week rotations in collect_all.
+    week. Compare with an absolute time tolerance so boundary drift (e.g.
+    17:59:59.8 vs 18:00:00.2, which straddles a minute boundary) does not
+    trigger false rotations. A real weekly reset advances the timestamp by
+    7 days, well outside any tolerance this function would use.
     """
     if not a or not b:
         return False
     try:
-        da = datetime.fromisoformat(a).replace(second=0, microsecond=0)
-        db = datetime.fromisoformat(b).replace(second=0, microsecond=0)
-        return da == db
+        da = datetime.fromisoformat(a)
+        db = datetime.fromisoformat(b)
+        return abs((da - db).total_seconds()) <= tolerance_seconds
     except (ValueError, TypeError):
         return a == b
 

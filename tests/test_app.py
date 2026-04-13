@@ -474,6 +474,26 @@ def test_same_reset_window_different_minutes():
     ) is False
 
 
+def test_same_reset_window_minute_boundary_drift():
+    """Sub-second jitter straddling a minute boundary is still the same window."""
+    import app
+
+    assert app._same_reset_window(
+        "2026-04-14T17:59:59.800000+00:00",
+        "2026-04-14T18:00:00.200000+00:00",
+    ) is True
+
+
+def test_same_reset_window_outside_tolerance():
+    """Drift larger than the tolerance is a real rotation."""
+    import app
+
+    assert app._same_reset_window(
+        "2026-04-14T18:00:00+00:00",
+        "2026-04-14T18:00:10+00:00",
+    ) is False
+
+
 def test_same_reset_window_different_weeks():
     """Timestamps a week apart are different windows."""
     import app
