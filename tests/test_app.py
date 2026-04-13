@@ -294,3 +294,49 @@ def test_flatten_snapshot_missing_weekly():
     assert flat["burn_rate_daily"] == 0
     assert flat["week_is_fresh"] is False
     assert flat["weekly_reset_display"] is None
+
+
+# --- /api/status route ---
+
+import json as _json
+
+
+def test_status_route_happy_path(monkeypatch):
+    """GET /api/status returns a flat JSON projection when the collector has a snapshot."""
+    import app
+
+    monkeypatch.setattr(app._collector, "snapshot", lambda: FULL_SNAP)
+
+    client = app.app.test_client()
+    resp = client.get("/api/status")
+
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("application/json")
+    assert resp.headers.get("Cache-Control") == "no-cache"
+
+    body = _json.loads(resp.data)
+    assert set(body.keys()) == set(CONTRACT_KEYS)
+    assert body["ready"] is True
+    assert body["session_pct"] == 42
+    assert body["combined_saved"] == 123456
+    assert body["rtk_saved"] == 50000
+    assert body["jcodemunch_freshness_label"] == "3m ago"
+
+
+def test_status_route_not_ready(monkeypatch):
+    """GET /api/status returns a stable shape with ready=false before the first tick."""
+    import app
+
+    monkeypatch.setattr(app._collector, "snapshot", lambda: None)
+
+    client = app.app.test_client()
+    resp = client.get("/api/status")
+
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"].startswith("application/json")
+    body = _json.loads(resp.data)
+    assert set(body.keys()) == set(CONTRACT_KEYS)
+    assert body["ready"] is False
+    assert body["session_pct"] is None
+    assert body["combined_saved"] == 0
+    assert body["rtk_health"] == "error"

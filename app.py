@@ -1588,6 +1588,19 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/status")
+def api_status():
+    flat = _flatten_snapshot(_collector.snapshot())
+    return Response(
+        json.dumps(flat),
+        mimetype="application/json",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.route("/events")
 def events():
     def stream():
