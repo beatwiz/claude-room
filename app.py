@@ -890,13 +890,19 @@ def collect_all():
     history = history[:50]
 
     # Per-tool history lists are merged into the top-level `history` above,
-    # so drop them to shave ~15KB per SSE tick.
+    # so drop them to shave ~15KB per SSE tick. Build a new dict per tool
+    # rather than popping in-place — the same tool dict is stored in
+    # _last_good by reference, and mutating it would strip history from the
+    # fallback cache and empty the feed on the next transient failure.
     for tool_name in ("rtk", "headroom", "jcodemunch", "jdocmunch"):
-        results[tool_name].pop("history", None)
+        trimmed = dict(results[tool_name])
+        trimmed.pop("history", None)
+        results[tool_name] = trimmed
 
     timestamp = datetime.now(timezone.utc).isoformat()
 
     return {
+        "ready": True,
         "timestamp": timestamp,
         "combined_saved": combined_saved,
         "rtk": results["rtk"],
@@ -1595,7 +1601,7 @@ function updateDashboard(d) {
     }
 
     // --- Combined card ---
-    document.getElementById('summary-combined-health').className = 'health-dot ' + (d.ready === false ? 'health-error' : 'health-ok');
+    document.getElementById('summary-combined-health').className = 'health-dot ' + (d.ready ? 'health-ok' : 'health-error');
     document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
     var combinedUsdEl = document.getElementById('summary-combined-usd');
     if (usdPerToken != null) {
