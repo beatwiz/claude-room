@@ -446,6 +446,8 @@ def collect_claude_usage():
         five = data.get("five_hour") or {}
         seven = data.get("seven_day") or {}
         sonnet = data.get("seven_day_sonnet") or {}
+        extra = data.get("extra_usage") or {}
+        extra_enabled = bool(extra.get("is_enabled"))
 
         result = {
             "session_pct": five.get("utilization"),
@@ -454,6 +456,10 @@ def collect_claude_usage():
             "weekly_reset": seven.get("resets_at"),
             "sonnet_pct": sonnet.get("utilization"),
             "sonnet_reset": sonnet.get("resets_at"),
+            "extra_usage_enabled": extra_enabled,
+            "extra_usage_monthly_limit": extra.get("monthly_limit") if extra_enabled else None,
+            "extra_usage_used": extra.get("used_credits") if extra_enabled else None,
+            "extra_usage_pct": extra.get("utilization") if extra_enabled else None,
             "active": True,
         }
         _usage_cache = result
@@ -668,6 +674,11 @@ def _flatten_snapshot(snap):
         "jdocmunch_index_size_mb": jdm.get("index_size_mb", 0),
         "jdocmunch_freshness": jdm.get("freshness", 0),
         "jdocmunch_freshness_label": jdm.get("freshness_label", "idle"),
+
+        "extra_usage_enabled": claude.get("extra_usage_enabled", False) if claude_active else False,
+        "extra_usage_monthly_limit": claude.get("extra_usage_monthly_limit") if claude_active else None,
+        "extra_usage_used": claude.get("extra_usage_used") if claude_active else None,
+        "extra_usage_pct": claude.get("extra_usage_pct") if claude_active else None,
     }
 
 

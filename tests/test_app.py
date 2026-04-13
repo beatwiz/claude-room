@@ -58,6 +58,10 @@ CONTRACT_KEYS = [
     "jdocmunch_index_size_mb",
     "jdocmunch_freshness",
     "jdocmunch_freshness_label",
+    "extra_usage_enabled",
+    "extra_usage_monthly_limit",
+    "extra_usage_used",
+    "extra_usage_pct",
 ]
 
 
@@ -111,6 +115,12 @@ def test_flatten_snapshot_none_returns_ready_false():
     assert flat["jdocmunch_freshness"] == 0
     assert flat["jdocmunch_freshness_label"] == "idle"
 
+    # extra_usage defaults when not ready
+    assert flat["extra_usage_enabled"] is False
+    assert flat["extra_usage_monthly_limit"] is None
+    assert flat["extra_usage_used"] is None
+    assert flat["extra_usage_pct"] is None
+
 
 # Hand-built "full" snapshot used by several tests below. Every field the
 # flattener reads from is populated with a distinct, recognisable value so
@@ -126,6 +136,10 @@ FULL_SNAP = {
         "weekly_reset": "2026-04-17T15:00:00+00:00",
         "sonnet_pct": 6,
         "sonnet_reset": "2026-04-17T15:00:00+00:00",
+        "extra_usage_enabled": True,
+        "extra_usage_monthly_limit": 17000,
+        "extra_usage_used": 6072.0,
+        "extra_usage_pct": 35.71764705882353,
     },
     "weekly": {
         "this_week": 8000,
@@ -244,6 +258,12 @@ def test_flatten_snapshot_full_payload():
     assert flat["jdocmunch_freshness"] == 40
     assert flat["jdocmunch_freshness_label"] == "24m ago"
 
+    # extra_usage
+    assert flat["extra_usage_enabled"] is True
+    assert flat["extra_usage_monthly_limit"] == 17000
+    assert flat["extra_usage_used"] == 6072.0
+    assert flat["extra_usage_pct"] == 35.71764705882353
+
 
 def test_flatten_snapshot_inactive_claude_usage():
     """When claude_usage.active is False, all six claude fields are None (not zero)."""
@@ -263,6 +283,12 @@ def test_flatten_snapshot_inactive_claude_usage():
     assert flat["sonnet_reset"] is None
     # weekly_reset_display is derived from snap["weekly"]["reset_display"], which is still present
     assert flat["weekly_reset_display"] == "Thu 17 Apr 15:00"
+
+    # extra_usage fields also null when claude_usage is inactive
+    assert flat["extra_usage_enabled"] is False
+    assert flat["extra_usage_monthly_limit"] is None
+    assert flat["extra_usage_used"] is None
+    assert flat["extra_usage_pct"] is None
 
 
 def test_flatten_snapshot_missing_sparklines():
@@ -294,6 +320,28 @@ def test_flatten_snapshot_missing_weekly():
     assert flat["burn_rate_daily"] == 0
     assert flat["week_is_fresh"] is False
     assert flat["weekly_reset_display"] is None
+
+
+def test_flatten_snapshot_extra_usage_disabled():
+    """When claude_usage is active but extra_usage is disabled, the four extra_usage fields are default."""
+    import app
+
+    snap = dict(FULL_SNAP)
+    snap["claude_usage"] = dict(FULL_SNAP["claude_usage"])
+    snap["claude_usage"]["extra_usage_enabled"] = False
+    snap["claude_usage"]["extra_usage_monthly_limit"] = None
+    snap["claude_usage"]["extra_usage_used"] = None
+    snap["claude_usage"]["extra_usage_pct"] = None
+
+    flat = app._flatten_snapshot(snap)
+
+    # Other claude fields still populated
+    assert flat["session_pct"] == 42
+    # Extra usage is off
+    assert flat["extra_usage_enabled"] is False
+    assert flat["extra_usage_monthly_limit"] is None
+    assert flat["extra_usage_used"] is None
+    assert flat["extra_usage_pct"] is None
 
 
 # --- /api/status route ---
