@@ -563,6 +563,24 @@ def _group_history(entries):
     return grouped
 
 
+def _same_reset_window(a, b):
+    """Return True iff two ISO-8601 resets_at timestamps refer to the same reset window.
+
+    Anthropic's usage API returns resets_at with sub-second precision that
+    jitters (observed drift up to ~1s) between calls even within the same
+    week. Compare truncated to the minute so drift does not trigger false
+    week rotations in collect_all.
+    """
+    if not a or not b:
+        return False
+    try:
+        da = datetime.fromisoformat(a).replace(second=0, microsecond=0)
+        db = datetime.fromisoformat(b).replace(second=0, microsecond=0)
+        return da == db
+    except (ValueError, TypeError):
+        return a == b
+
+
 def _flatten_snapshot(snap):
     """Flatten the collector snapshot to a status-line-friendly dict.
 
@@ -699,7 +717,7 @@ def collect_all():
         stored_reset = weekly_data.get("weekly_reset_at", "")
 
         # Reset has moved forward -- rotate weeks
-        if fresh_reset != stored_reset and stored_reset:
+        if not _same_reset_window(fresh_reset, stored_reset) and stored_reset:
             baseline = weekly_data.get("current_week_baseline", 0)
             weekly_data["last_week_savings"] = combined_saved - baseline
             weekly_data["last_week_end"] = stored_reset

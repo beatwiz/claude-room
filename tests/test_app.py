@@ -340,3 +340,76 @@ def test_status_route_not_ready(monkeypatch):
     assert body["session_pct"] is None
     assert body["combined_saved"] == 0
     assert body["rtk_health"] == "error"
+
+
+# --- _same_reset_window ---
+
+
+def test_same_reset_window_identical_timestamps():
+    """Two identical timestamps refer to the same window."""
+    import app
+
+    assert app._same_reset_window(
+        "2026-04-14T18:00:01.339260+00:00",
+        "2026-04-14T18:00:01.339260+00:00",
+    ) is True
+
+
+def test_same_reset_window_microsecond_drift():
+    """Same minute, different microseconds — should be the same window."""
+    import app
+
+    assert app._same_reset_window(
+        "2026-04-14T18:00:01.339260+00:00",
+        "2026-04-14T18:00:01.150071+00:00",
+    ) is True
+
+
+def test_same_reset_window_sub_second_drift():
+    """Same minute, different seconds within the minute — should still be the same window."""
+    import app
+
+    assert app._same_reset_window(
+        "2026-04-14T18:00:01.339260+00:00",
+        "2026-04-14T18:00:00.513979+00:00",
+    ) is True
+
+
+def test_same_reset_window_different_minutes():
+    """Timestamps in different minutes are different windows — rotation should fire."""
+    import app
+
+    assert app._same_reset_window(
+        "2026-04-14T18:00:01.339260+00:00",
+        "2026-04-14T18:02:00.000000+00:00",
+    ) is False
+
+
+def test_same_reset_window_different_weeks():
+    """Timestamps a week apart are different windows."""
+    import app
+
+    assert app._same_reset_window(
+        "2026-04-14T18:00:01+00:00",
+        "2026-04-21T18:00:01+00:00",
+    ) is False
+
+
+def test_same_reset_window_none_or_empty():
+    """Missing timestamps are not a match."""
+    import app
+
+    assert app._same_reset_window(None, "2026-04-14T18:00:01+00:00") is False
+    assert app._same_reset_window("2026-04-14T18:00:01+00:00", None) is False
+    assert app._same_reset_window("", "2026-04-14T18:00:01+00:00") is False
+    assert app._same_reset_window(None, None) is False
+
+
+def test_same_reset_window_invalid_format_falls_back_to_string_equality():
+    """An unparseable string still works via string-equality fallback."""
+    import app
+
+    # Both identical garbage strings → True via fallback
+    assert app._same_reset_window("not-a-date", "not-a-date") is True
+    # Different garbage → False
+    assert app._same_reset_window("not-a-date", "other-garbage") is False
