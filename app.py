@@ -203,38 +203,51 @@ def collect_headroom():
 
         try:
             resp = urlopen(f"{HEADROOM_URL}/stats", timeout=2)
-            data = json.loads(resp.read().decode())
+            raw = json.loads(resp.read().decode())
 
-            # Map nested headroom fields to the flat names the frontend expects
-            savings = data.get("savings", {})
-            tokens = data.get("tokens", {})
-            cache = data.get("compression_cache", {})
+            # Extract only what the dashboard + /api/status need; discard the rest.
+            tokens_section = raw.get("tokens") or {}
+            cache_section = raw.get("compression_cache") or {}
+            display = raw.get("display_session") or {}
+            persist = (raw.get("persistent_savings") or {}).get("lifetime") or {}
+            req_stats = raw.get("requests") or {}
+            latency = raw.get("latency") or {}
+            prefix_totals = ((raw.get("prefix_cache") or {}).get("totals") or {})
 
-            data["active"] = True
-            data["version"] = version or "unknown"
-            # Use compression-only savings (not savings.total_tokens which includes RTK)
-            data["total_saved"] = tokens.get("saved", 0)
-            data["sessions"] = cache.get("active_sessions", 0)
-            data["avg_savings_pct"] = round(tokens.get("savings_percent", 0), 1)
-            data["compression_ratio"] = data["avg_savings_pct"]
+            total_saved = tokens_section.get("saved", 0)
+            avg_pct = round(tokens_section.get("savings_percent", 0), 1)
 
-            # Accumulate headroom events in a rolling buffer
+            # Accumulate headroom events in a rolling buffer (delta tracking)
             global _headroom_last_total, _headroom_history
-            current_total = data["total_saved"]
-            if _headroom_last_total > 0 and current_total > _headroom_last_total:
-                delta = current_total - _headroom_last_total
+            if _headroom_last_total > 0 and total_saved > _headroom_last_total:
+                delta = total_saved - _headroom_last_total
                 _headroom_history.append({
                     "time": datetime.now(timezone.utc).isoformat(),
                     "tool": "headroom",
                     "cmd": f"compressed {delta:,} tokens",
                     "saved_tokens": delta,
-                    "saved_pct": data["avg_savings_pct"],
+                    "saved_pct": avg_pct,
                 })
-                _headroom_history = _headroom_history[-100:]  # keep last 100
-            _headroom_last_total = current_total
-            data["history"] = list(_headroom_history)
+                _headroom_history = _headroom_history[-100:]
+            _headroom_last_total = total_saved
 
-            return data
+            return {
+                "active": True,
+                "version": version or "unknown",
+                "total_saved": total_saved,
+                "avg_savings_pct": avg_pct,
+                "compression_ratio": avg_pct,
+                "sessions": cache_section.get("active_sessions", 0),
+                "session_saved": display.get("tokens_saved", 0),
+                "lifetime_saved": persist.get("tokens_saved", 0),
+                "session_saved_usd": display.get("compression_savings_usd", 0),
+                "lifetime_saved_usd": persist.get("compression_savings_usd", 0),
+                "cache_hit_rate": round(prefix_totals.get("hit_rate", 0), 1),
+                "requests_total": req_stats.get("total", 0),
+                "requests_failed": req_stats.get("failed", 0),
+                "avg_latency_ms": round(latency.get("average_ms", 0), 1),
+                "history": list(_headroom_history),
+            }
         except (URLError, OSError, json.JSONDecodeError):
             return {
                 "active": False,
@@ -654,6 +667,14 @@ def _flatten_snapshot(snap):
         "headroom_saved": headroom.get("total_saved", 0),
         "headroom_delta": spark_hr.get("delta", 0),
         "headroom_sessions": headroom.get("sessions", 0),
+        "headroom_session_saved": headroom.get("session_saved", 0),
+        "headroom_lifetime_saved": headroom.get("lifetime_saved", 0),
+        "headroom_session_saved_usd": headroom.get("session_saved_usd", 0),
+        "headroom_lifetime_saved_usd": headroom.get("lifetime_saved_usd", 0),
+        "headroom_cache_hit_rate": headroom.get("cache_hit_rate", 0),
+        "headroom_requests_total": headroom.get("requests_total", 0),
+        "headroom_requests_failed": headroom.get("requests_failed", 0),
+        "headroom_avg_latency_ms": headroom.get("avg_latency_ms", 0),
 
         "jcodemunch_active": jcm.get("active", False),
         "jcodemunch_health": jcm.get("health", "error"),

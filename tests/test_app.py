@@ -40,6 +40,14 @@ CONTRACT_KEYS = [
     "headroom_saved",
     "headroom_delta",
     "headroom_sessions",
+    "headroom_session_saved",
+    "headroom_lifetime_saved",
+    "headroom_session_saved_usd",
+    "headroom_lifetime_saved_usd",
+    "headroom_cache_hit_rate",
+    "headroom_requests_total",
+    "headroom_requests_failed",
+    "headroom_avg_latency_ms",
     "jcodemunch_active",
     "jcodemunch_health",
     "jcodemunch_version",
@@ -106,6 +114,17 @@ def test_flatten_snapshot_none_returns_ready_false():
     assert flat["rtk_commands"] == 0
     assert flat["rtk_avg_pct"] == 0
     assert flat["headroom_sessions"] == 0
+
+    # headroom lifetime/session default to 0 when not ready
+    assert flat["headroom_session_saved"] == 0
+    assert flat["headroom_lifetime_saved"] == 0
+    assert flat["headroom_session_saved_usd"] == 0
+    assert flat["headroom_lifetime_saved_usd"] == 0
+    assert flat["headroom_cache_hit_rate"] == 0
+    assert flat["headroom_requests_total"] == 0
+    assert flat["headroom_requests_failed"] == 0
+    assert flat["headroom_avg_latency_ms"] == 0
+
     assert flat["jcodemunch_repos_indexed"] == 0
     assert flat["jcodemunch_index_size_mb"] == 0
     assert flat["jcodemunch_freshness"] == 0
@@ -162,6 +181,14 @@ FULL_SNAP = {
         "version": "1.0.0",
         "total_saved": 40000,
         "sessions": 3,
+        "session_saved": 67861473,
+        "lifetime_saved": 117309038,
+        "session_saved_usd": 339.22,
+        "lifetime_saved_usd": 584.41,
+        "cache_hit_rate": 71.8,
+        "requests_total": 1586,
+        "requests_failed": 0,
+        "avg_latency_ms": 7477.5,
     },
     "jcodemunch": {
         "active": True,
@@ -263,6 +290,16 @@ def test_flatten_snapshot_full_payload():
     assert flat["extra_usage_monthly_limit"] == 17000
     assert flat["extra_usage_used"] == 6072.0
     assert flat["extra_usage_pct"] == 35.71764705882353
+
+    # headroom lifetime + session richer fields
+    assert flat["headroom_session_saved"] == 67861473
+    assert flat["headroom_lifetime_saved"] == 117309038
+    assert flat["headroom_session_saved_usd"] == 339.22
+    assert flat["headroom_lifetime_saved_usd"] == 584.41
+    assert flat["headroom_cache_hit_rate"] == 71.8
+    assert flat["headroom_requests_total"] == 1586
+    assert flat["headroom_requests_failed"] == 0
+    assert flat["headroom_avg_latency_ms"] == 7477.5
 
 
 def test_flatten_snapshot_inactive_claude_usage():
