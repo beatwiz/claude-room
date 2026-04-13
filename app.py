@@ -660,6 +660,18 @@ def _flatten_snapshot(snap):
     def _claude(key):
         return claude.get(key) if claude_active else None
 
+    hr_lifetime = headroom.get("lifetime_saved") or 0
+    hr_lifetime_usd = headroom.get("lifetime_saved_usd") or 0
+    usd_per_token = (hr_lifetime_usd / hr_lifetime) if hr_lifetime > 0 else None
+    combined_saved_usd = None
+    if usd_per_token is not None:
+        non_headroom_tokens = (
+            (rtk.get("total_saved") or 0)
+            + (jcm.get("total_saved") or 0)
+            + (jdm.get("total_saved") or 0)
+        )
+        combined_saved_usd = hr_lifetime_usd + non_headroom_tokens * usd_per_token
+
     return {
         "ready": ready,
         "timestamp": snap.get("timestamp"),
@@ -674,6 +686,7 @@ def _flatten_snapshot(snap):
         "sonnet_reset": _claude("sonnet_reset"),
 
         "combined_saved": snap.get("combined_saved", 0),
+        "combined_saved_usd": combined_saved_usd,
         "this_week_saved": weekly.get("this_week", 0),
         "last_week_saved": weekly.get("last_week", 0),
         "burn_rate_daily": weekly.get("burn_rate_daily", 0),
@@ -1274,6 +1287,11 @@ body {
     color: #bbb;
     font-weight: 600;
 }
+.summary-cards .card-sub-usd {
+    color: #5cc48a;
+    font-size: 12px;
+    margin-top: 2px;
+}
 .summary-cards .combined-stats {
     display: flex;
     flex-direction: column;
@@ -1367,6 +1385,7 @@ body {
             <div class="combined-left">
                 <div class="card-value" id="summary-combined-value">--</div>
                 <div class="card-sub">tokens saved</div>
+                <div class="card-sub card-sub-usd" id="summary-combined-usd">--</div>
             </div>
             <div class="combined-stats">
                 <div class="stat-row"><span class="label">This Week</span><span class="val val-live" id="summary-this-week">--</span></div>
@@ -1567,6 +1586,17 @@ function updateDashboard(d) {
     // --- Combined card ---
     document.getElementById('summary-combined-health').className = 'health-dot ' + (d.ready === false ? 'health-error' : 'health-ok');
     document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
+    var combinedUsdEl = document.getElementById('summary-combined-usd');
+    var hrLifetime = (d.headroom || {}).lifetime_saved || 0;
+    var hrLifetimeUsd = (d.headroom || {}).lifetime_saved_usd || 0;
+    var rate = hrLifetime > 0 ? hrLifetimeUsd / hrLifetime : null;
+    if (rate != null) {
+        var nonHrTokens = ((d.rtk || {}).total_saved || 0) + ((d.jcodemunch || {}).total_saved || 0) + ((d.jdocmunch || {}).total_saved || 0);
+        var combinedUsd = hrLifetimeUsd + nonHrTokens * rate;
+        combinedUsdEl.textContent = '≈ $' + combinedUsd.toFixed(2) + ' saved';
+    } else {
+        combinedUsdEl.textContent = '--';
+    }
     document.getElementById('summary-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
     document.getElementById('summary-last-week').textContent = w.last_week != null ? (w.last_week === 0 ? '0' : formatTokens(w.last_week, true)) : '--';
     document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';

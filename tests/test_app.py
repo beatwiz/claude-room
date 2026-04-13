@@ -24,6 +24,7 @@ CONTRACT_KEYS = [
     "sonnet_pct",
     "sonnet_reset",
     "combined_saved",
+    "combined_saved_usd",
     "this_week_saved",
     "last_week_saved",
     "burn_rate_daily",
