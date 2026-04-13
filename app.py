@@ -232,10 +232,17 @@ def collect_headroom():
             global _headroom_last_total, _headroom_history
             if _headroom_last_total > 0 and total_saved > _headroom_last_total:
                 delta = total_saved - _headroom_last_total
+                # Back-compute approximate input/output from delta + session savings %
+                if avg_pct and avg_pct > 0:
+                    input_est = int(round(delta / (avg_pct / 100)))
+                    output_est = max(0, input_est - delta)
+                    cmd_text = f"compressed {input_est:,} → {output_est:,} tokens"
+                else:
+                    cmd_text = "compression event"
                 _headroom_history.append({
                     "time": datetime.now(timezone.utc).isoformat(),
                     "tool": "headroom",
-                    "cmd": f"compressed {delta:,} tokens",
+                    "cmd": cmd_text,
                     "saved_tokens": delta,
                     "saved_pct": avg_pct,
                 })
@@ -307,7 +314,7 @@ def collect_jcodemunch():
                 _jcodemunch_history.append({
                     "time": datetime.now(timezone.utc).isoformat(),
                     "tool": "jcodemunch",
-                    "cmd": f"indexed/queried -- saved {delta:,} tokens",
+                    "cmd": f"indexed/queried across {repos_indexed} repos",
                     "saved_tokens": delta,
                     "saved_pct": 0,
                 })
@@ -390,7 +397,7 @@ def collect_jdocmunch():
                 _jdocmunch_history.append({
                     "time": datetime.now(timezone.utc).isoformat(),
                     "tool": "jdocmunch",
-                    "cmd": f"indexed/queried -- saved {delta:,} tokens",
+                    "cmd": f"indexed/queried across {docs_indexed} docs",
                     "saved_tokens": delta,
                     "saved_pct": 0,
                 })
