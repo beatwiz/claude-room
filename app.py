@@ -80,6 +80,16 @@ def resolve_versions_once():
     _cached_versions["rtk"] = rtk_v if rtk_v else "unknown"
 
     jc_v = _run([JCODEMUNCH_BIN, "--version"])
+    if not jc_v:
+        # Fallback: read version field from the mounted config.jsonc
+        config_path = os.path.join(JCODEMUNCH_INDEX_DIR, "config.jsonc")
+        try:
+            with open(config_path) as f:
+                m = re.search(r'"version"\s*:\s*"([^"]+)"', f.read())
+                if m:
+                    jc_v = m.group(1)
+        except (OSError, IOError):
+            pass
     _cached_versions["jcodemunch"] = jc_v if jc_v else "unknown"
 
     jd_v = _run([JDOCMUNCH_BIN, "--version"])
@@ -1216,26 +1226,18 @@ body {
 .summary-cards .card.card-combined {
     grid-column: span 2;
 }
-.summary-cards .card-title {
-    font-size: 10px;
-    letter-spacing: 0.15em;
-    color: #888;
-    text-transform: uppercase;
-    margin-bottom: 8px;
-}
 .summary-cards .card-value {
-    font-size: 32px;
-    font-weight: 600;
     color: #fff;
-    line-height: 1.1;
     margin-bottom: 0;
 }
 .summary-cards .card-value.dim {
     color: #666;
 }
 .summary-cards .card-combined .card-value {
-    font-size: 42px;
     color: #00ff88;
+}
+.summary-cards .card-claude .card-version {
+    color: #bbb;
 }
 .summary-cards .card-sub {
     color: #aaa;
@@ -1249,17 +1251,17 @@ body {
 .summary-cards .combined-body {
     display: flex;
     align-items: center;
-    gap: 28px;
-    margin-top: 8px;
+    gap: 12px;
 }
 .summary-cards .combined-body .card-value {
-    flex: 0 0 auto;
+    flex: 1 1 0;
+    min-width: 0;
 }
 .summary-cards .combined-stats {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-width: 0;
 }
 .summary-cards .combined-stats .stat-row {
@@ -1282,17 +1284,6 @@ body {
 .summary-cards .val-live { color: #00ff88; }
 .summary-cards .val-rate { color: #5cc48a; }
 .summary-cards .val-cold { color: #666; }
-.summary-cards .card-claude .card-sub-row .val { color: #bbb; }
-.summary-cards .card-sub-row {
-    display: flex;
-    gap: 14px;
-    margin-top: 14px;
-    font-size: 12px;
-    color: #888;
-    flex-wrap: wrap;
-}
-.summary-cards .card-sub-row .label { color: #666; }
-.summary-cards .card-sub-row .val { color: #ccc; margin-left: 4px; }
 .summary-cards .usage-row {
     display: flex;
     justify-content: space-between;
@@ -1327,7 +1318,11 @@ body {
 <!-- Summary Cards -->
 <div class="summary-cards">
     <div class="card card-combined" id="summary-combined">
-        <div class="card-title">Combined Tokens Saved</div>
+        <div class="card-header">
+            <span class="health-dot health-ok" id="summary-combined-health"></span>
+            <span class="card-name">Combined</span>
+            <span class="card-version">lifetime</span>
+        </div>
         <div class="combined-body">
             <div class="card-value" id="summary-combined-value">--</div>
             <div class="combined-stats">
@@ -1338,16 +1333,21 @@ body {
         </div>
     </div>
     <div class="card card-claude" id="summary-claude">
-        <div class="card-title">Claude Usage</div>
+        <div class="card-header">
+            <span class="health-dot health-error" id="summary-claude-health"></span>
+            <span class="card-name">Claude Usage</span>
+            <span class="card-version" id="summary-claude-reset">--</span>
+        </div>
         <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
         <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
         <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
-        <div class="card-sub-row">
-            <span><span class="label">reset</span><span class="val" id="summary-claude-reset">--</span></span>
-        </div>
     </div>
     <div class="card card-extra inactive" id="summary-extra">
-        <div class="card-title">Extra Usage</div>
+        <div class="card-header">
+            <span class="health-dot health-error" id="summary-extra-health"></span>
+            <span class="card-name">Extra Usage</span>
+            <span class="card-version">overage</span>
+        </div>
         <div class="card-value dim" id="summary-extra-value">n/a</div>
         <div class="card-sub" id="summary-extra-detail">not enabled</div>
         <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%"></div></div>
@@ -1512,12 +1512,14 @@ function updateDashboard(d) {
     var cu = d.claude_usage || {};
 
     // --- Combined card ---
+    document.getElementById('summary-combined-health').className = 'health-dot ' + (d.ready === false ? 'health-error' : 'health-ok');
     document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
     document.getElementById('summary-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
     document.getElementById('summary-last-week').textContent = w.last_week != null ? (w.last_week === 0 ? '0' : formatTokens(w.last_week, true)) : '--';
     document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
 
     // --- Claude Usage card ---
+    document.getElementById('summary-claude-health').className = 'health-dot ' + (cu.active ? 'health-ok' : 'health-error');
     var sessionEl = document.getElementById('summary-session-pct');
     var weeklyEl = document.getElementById('summary-weekly-pct');
     var sonnetEl = document.getElementById('summary-sonnet-pct');
@@ -1549,6 +1551,7 @@ function updateDashboard(d) {
     var extraVal = document.getElementById('summary-extra-value');
     var extraDetail = document.getElementById('summary-extra-detail');
     var extraBar = document.getElementById('summary-extra-bar');
+    document.getElementById('summary-extra-health').className = 'health-dot ' + (cu.active && cu.extra_usage_enabled ? 'health-ok' : 'health-error');
     if (cu.active && cu.extra_usage_enabled) {
         extraCard.className = 'card card-extra';
         var extraPct = cu.extra_usage_pct || 0;
