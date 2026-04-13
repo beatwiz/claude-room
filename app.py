@@ -74,23 +74,27 @@ _cached_versions = {
 }
 
 
+def _read_jcodemunch_config_version():
+    config_path = os.path.join(JCODEMUNCH_INDEX_DIR, "config.jsonc")
+    try:
+        with open(config_path) as f:
+            m = re.search(r'"version"\s*:\s*"([^"]+)"', f.read())
+            return m.group(1) if m else None
+    except OSError:
+        return None
+
+
 def resolve_versions_once():
     """Resolve tool versions once. Called by DashboardCollector.run() at thread startup.
     Per-tool precedence: TOOL_VERSION env var > binary --version > tool-specific fallback > "unknown"."""
     rtk_v = os.environ.get("RTK_VERSION") or _run([RTK_BIN, "--version"])
     _cached_versions["rtk"] = rtk_v if rtk_v else "unknown"
 
-    jc_v = os.environ.get("JCODEMUNCH_VERSION") or _run([JCODEMUNCH_BIN, "--version"])
-    if not jc_v:
-        # Fallback: read version field from the mounted config.jsonc
-        config_path = os.path.join(JCODEMUNCH_INDEX_DIR, "config.jsonc")
-        try:
-            with open(config_path) as f:
-                m = re.search(r'"version"\s*:\s*"([^"]+)"', f.read())
-                if m:
-                    jc_v = m.group(1)
-        except (OSError, IOError):
-            pass
+    jc_v = (
+        os.environ.get("JCODEMUNCH_VERSION")
+        or _run([JCODEMUNCH_BIN, "--version"])
+        or _read_jcodemunch_config_version()
+    )
     _cached_versions["jcodemunch"] = jc_v if jc_v else "unknown"
 
     jd_v = os.environ.get("JDOCMUNCH_VERSION") or _run([JDOCMUNCH_BIN, "--version"])
@@ -200,23 +204,30 @@ def collect_rtk():
         return None
 
 
+_headroom_version = None
+
+
 def collect_headroom():
     """Check headroom proxy stats endpoint."""
     try:
-        # Get version from /health (fast) instead of CLI (3.6s ONNX init)
-        version = "unknown"
-        try:
-            hresp = urlopen(f"{HEADROOM_URL}/health", timeout=2)
-            hdata = json.loads(hresp.read().decode())
-            version = hdata.get("version", "unknown")
-        except (URLError, OSError, json.JSONDecodeError) as e:
-            print(f"[headroom] /health failed: {e}", flush=True)
+        global _headroom_version, _headroom_last_total, _headroom_history
+        if _headroom_version is None:
+            _headroom_version = os.environ.get("HEADROOM_VERSION")
+        if _headroom_version is None:
+            try:
+                hresp = urlopen(f"{HEADROOM_URL}/health", timeout=2)
+                hdata = json.loads(hresp.read().decode())
+                v = hdata.get("version")
+                if v:
+                    _headroom_version = v
+            except (URLError, OSError, json.JSONDecodeError):
+                pass
+        version = _headroom_version or "unknown"
 
         try:
             resp = urlopen(f"{HEADROOM_URL}/stats", timeout=2)
             raw = json.loads(resp.read().decode())
 
-            # Extract only what the dashboard + /api/status need; discard the rest.
             tokens_section = raw.get("tokens") or {}
             cache_section = raw.get("compression_cache") or {}
             display = raw.get("display_session") or {}
@@ -228,11 +239,8 @@ def collect_headroom():
             total_saved = tokens_section.get("saved", 0)
             avg_pct = round(tokens_section.get("savings_percent", 0), 1)
 
-            # Accumulate headroom events in a rolling buffer (delta tracking)
-            global _headroom_last_total, _headroom_history
             if _headroom_last_total > 0 and total_saved > _headroom_last_total:
                 delta = total_saved - _headroom_last_total
-                # Back-compute approximate input/output from delta + session savings %
                 if avg_pct and avg_pct > 0:
                     input_est = int(round(delta / (avg_pct / 100)))
                     output_est = max(0, input_est - delta)
@@ -251,10 +259,9 @@ def collect_headroom():
 
             return {
                 "active": True,
-                "version": version or "unknown",
+                "version": version,
                 "total_saved": total_saved,
                 "avg_savings_pct": avg_pct,
-                "compression_ratio": avg_pct,
                 "sessions": cache_section.get("active_sessions", 0),
                 "session_saved": display.get("tokens_saved", 0),
                 "lifetime_saved": persist.get("tokens_saved", 0),
@@ -269,7 +276,7 @@ def collect_headroom():
         except (URLError, OSError, json.JSONDecodeError):
             return {
                 "active": False,
-                "version": version or "unknown",
+                "version": version,
             }
     except Exception:
         return None
@@ -649,7 +656,7 @@ def _flatten_snapshot(snap):
     spark_jcm = sparklines.get("jcodemunch") or {}
     spark_jdm = sparklines.get("jdocmunch") or {}
 
-    claude_active = claude.get("active") is True
+    claude_active = bool(claude.get("active"))
     def _claude(key):
         return claude.get(key) if claude_active else None
 
@@ -715,10 +722,10 @@ def _flatten_snapshot(snap):
         "jdocmunch_freshness": jdm.get("freshness", 0),
         "jdocmunch_freshness_label": jdm.get("freshness_label", "idle"),
 
-        "extra_usage_enabled": claude.get("extra_usage_enabled", False) if claude_active else False,
-        "extra_usage_monthly_limit": claude.get("extra_usage_monthly_limit") if claude_active else None,
-        "extra_usage_used": claude.get("extra_usage_used") if claude_active else None,
-        "extra_usage_pct": claude.get("extra_usage_pct") if claude_active else None,
+        "extra_usage_enabled": bool(_claude("extra_usage_enabled")),
+        "extra_usage_monthly_limit": _claude("extra_usage_monthly_limit"),
+        "extra_usage_used": _claude("extra_usage_used"),
+        "extra_usage_pct": _claude("extra_usage_pct"),
     }
 
 
@@ -869,13 +876,10 @@ def collect_all():
     history = _group_history(history)
     history = history[:50]
 
-    # Drop per-tool history lists after merging — the HTML dashboard reads
-    # the merged top-level `history` only, and the /api/status flat contract
-    # doesn't reference per-tool histories. This cuts ~15KB per SSE tick.
+    # Per-tool history lists are merged into the top-level `history` above,
+    # so drop them to shave ~15KB per SSE tick.
     for tool_name in ("rtk", "headroom", "jcodemunch", "jdocmunch"):
-        tool_dict = results.get(tool_name)
-        if isinstance(tool_dict, dict):
-            tool_dict.pop("history", None)
+        results[tool_name].pop("history", None)
 
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -1304,6 +1308,9 @@ body {
 .summary-cards .usage-row .val.pct-green { color: #00ff88; }
 .summary-cards .usage-row .val.pct-yellow { color: #ffcc00; }
 .summary-cards .usage-row .val.pct-red { color: #ff4444; }
+.summary-cards .card-extra .progress-fill.pct-green { background: #00ff88; }
+.summary-cards .card-extra .progress-fill.pct-yellow { background: #ffcc00; }
+.summary-cards .card-extra .progress-fill.pct-red { background: #ff4444; }
 @media (max-width: 1000px) {
     .summary-cards { grid-template-columns: repeat(2, 1fr); }
     .summary-cards .card.card-combined { grid-column: span 2; }
@@ -1490,10 +1497,20 @@ function shortVersion(v) {
 }
 
 function pctClass(n) {
-    if (n == null) return 'tv';
+    if (n == null) return '';
     if (n > 80) return 'pct-red';
     if (n > 50) return 'pct-yellow';
     return 'pct-green';
+}
+
+function applyPctField(el, val) {
+    if (val == null) {
+        el.textContent = '--';
+        el.className = 'val';
+    } else {
+        el.textContent = val + '%';
+        el.className = 'val ' + pctClass(val);
+    }
 }
 
 var TOOLS = ['rtk', 'headroom', 'jcodemunch', 'jdocmunch'];
@@ -1548,30 +1565,9 @@ function updateDashboard(d) {
 
     // --- Claude Usage card ---
     document.getElementById('summary-claude-health').className = 'health-dot ' + (cu.active ? 'health-ok' : 'health-error');
-    var sessionEl = document.getElementById('summary-session-pct');
-    var weeklyEl = document.getElementById('summary-weekly-pct');
-    var sonnetEl = document.getElementById('summary-sonnet-pct');
-    if (cu.active && cu.session_pct != null) {
-        sessionEl.textContent = cu.session_pct + '%';
-        sessionEl.className = 'val ' + pctClass(cu.session_pct);
-    } else {
-        sessionEl.textContent = '--';
-        sessionEl.className = 'val';
-    }
-    if (cu.active && cu.weekly_pct != null) {
-        weeklyEl.textContent = cu.weekly_pct + '%';
-        weeklyEl.className = 'val ' + pctClass(cu.weekly_pct);
-    } else {
-        weeklyEl.textContent = '--';
-        weeklyEl.className = 'val';
-    }
-    if (cu.active && cu.sonnet_pct != null) {
-        sonnetEl.textContent = cu.sonnet_pct + '%';
-        sonnetEl.className = 'val ' + pctClass(cu.sonnet_pct);
-    } else {
-        sonnetEl.textContent = '--';
-        sonnetEl.className = 'val';
-    }
+    applyPctField(document.getElementById('summary-session-pct'), cu.active ? cu.session_pct : null);
+    applyPctField(document.getElementById('summary-weekly-pct'), cu.active ? cu.weekly_pct : null);
+    applyPctField(document.getElementById('summary-sonnet-pct'), cu.active ? cu.sonnet_pct : null);
     document.getElementById('summary-claude-reset').textContent = w.reset_display || '--';
 
     // --- Extra Usage card ---
@@ -1593,14 +1589,14 @@ function updateDashboard(d) {
             extraDetail.textContent = 'active';
         }
         extraBar.style.width = Math.min(100, Math.max(0, extraPct)) + '%';
-        extraBar.style.background = extraPct > 80 ? '#ff4444' : extraPct > 50 ? '#ffcc00' : '#00ff88';
+        extraBar.className = 'progress-fill ' + pctClass(extraPct);
     } else {
         extraCard.className = 'card card-extra inactive';
         extraVal.className = 'card-value dim';
         extraVal.textContent = 'n/a';
         extraDetail.textContent = 'not enabled';
         extraBar.style.width = '0%';
-        extraBar.style.background = '#333';
+        extraBar.className = 'progress-fill';
     }
 
     // RTK
@@ -1631,13 +1627,12 @@ function updateDashboard(d) {
     if (hrDot) hrDot.className = 'health-dot health-' + hrHealth;
     document.getElementById('headroom-version').textContent = shortVersion(hr.version);
     if (hr.active) {
-        // Show lifetime tokens saved as the big number (117M territory)
         var hrLifetime = hr.lifetime_saved || hr.total_saved || 0;
         var hrLifetimeUsd = hr.lifetime_saved_usd || 0;
         var hrSessionUsd = hr.session_saved_usd || 0;
         document.getElementById('headroom-value').textContent = formatTokens(hrLifetime);
         document.getElementById('headroom-sub').textContent = 'lifetime · $' + hrLifetimeUsd.toFixed(2) + ' saved';
-        document.getElementById('headroom-bar').style.width = (hr.compression_ratio || hr.avg_savings_pct || 0) + '%';
+        document.getElementById('headroom-bar').style.width = (hr.avg_savings_pct || 0) + '%';
         document.getElementById('headroom-stats').innerHTML =
             '<span><span class="label">session</span> <span class="val">$' + hrSessionUsd.toFixed(2) + '</span></span>' +
             '<span><span class="label">cache</span> <span class="val">' + Math.round(hr.cache_hit_rate || 0) + '%</span></span>' +
@@ -1710,7 +1705,7 @@ function updateDashboard(d) {
     var feedEl = document.getElementById('feed');
     var hist = d.history || [];
     var lines = [];
-    for (var j = 0; j < hist.length && j < 100; j++) {
+    for (var j = 0; j < hist.length; j++) {
         var h = hist[j];
         var toolClr = TOOL_COLOURS[h.tool] || '#888';
         var savingsClass = 'info';
@@ -1746,7 +1741,7 @@ function updateDashboard(d) {
 
     var countEl = document.querySelector('.feed-count');
     if (countEl) {
-        countEl.textContent = 'showing last ' + Math.min(hist.length, 100);
+        countEl.textContent = 'showing last ' + hist.length;
     }
 }
 
