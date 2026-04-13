@@ -1063,25 +1063,26 @@ body {
     100% { opacity: 1; }
 }
 
-/* Tool colours */
-.clr-rtk { color: #00ff88; }
-.fill-rtk { background: #00ff88; }
-.stroke-rtk { stroke: #00ff88; }
-.area-rtk { fill: rgba(0, 255, 136, 0.1); }
+/* Tool accent colours — purely for card identity, no semantic meaning */
+.clr-rtk { color: #3b82f6; }
+.fill-rtk { background: #3b82f6; }
+.stroke-rtk { stroke: #3b82f6; }
+.area-rtk { fill: rgba(59, 130, 246, 0.1); }
 
-.clr-headroom { color: #00bfff; }
-.fill-headroom { background: #00bfff; }
-.stroke-headroom { stroke: #00bfff; }
-.area-headroom { fill: rgba(0, 191, 255, 0.1); }
+.clr-headroom { color: #8b5cf6; }
+.fill-headroom { background: #8b5cf6; }
+.stroke-headroom { stroke: #8b5cf6; }
+.area-headroom { fill: rgba(139, 92, 246, 0.1); }
 
-.clr-jcodemunch { color: #ff9f43; }
-.fill-jcodemunch { background: #ff9f43; }
-.stroke-jcodemunch { stroke: #ff9f43; }
-.area-jcodemunch { fill: rgba(255, 159, 67, 0.1); }
-.clr-jdocmunch { color: #a55eea; }
-.fill-jdocmunch { background: #a55eea; }
-.stroke-jdocmunch { stroke: #a55eea; }
-.area-jdocmunch { fill: rgba(165, 94, 234, 0.1); }
+.clr-jcodemunch { color: #ec4899; }
+.fill-jcodemunch { background: #ec4899; }
+.stroke-jcodemunch { stroke: #ec4899; }
+.area-jcodemunch { fill: rgba(236, 72, 153, 0.1); }
+
+.clr-jdocmunch { color: #14b8a6; }
+.fill-jdocmunch { background: #14b8a6; }
+.stroke-jdocmunch { stroke: #14b8a6; }
+.area-jdocmunch { fill: rgba(20, 184, 166, 0.1); }
 .health-dot {
     width: 5px;
     height: 5px;
@@ -1278,6 +1279,10 @@ body {
     font-weight: 600;
     font-size: 14px;
 }
+.summary-cards .val-live { color: #00ff88; }
+.summary-cards .val-rate { color: #5cc48a; }
+.summary-cards .val-cold { color: #666; }
+.summary-cards .card-claude .card-sub-row .val { color: #bbb; }
 .summary-cards .card-sub-row {
     display: flex;
     gap: 14px;
@@ -1326,9 +1331,9 @@ body {
         <div class="combined-body">
             <div class="card-value" id="summary-combined-value">--</div>
             <div class="combined-stats">
-                <div class="stat-row"><span class="label">This Week</span><span class="val" id="summary-this-week">--</span></div>
-                <div class="stat-row"><span class="label">Last Week</span><span class="val" id="summary-last-week">--</span></div>
-                <div class="stat-row"><span class="label">Avg/Day</span><span class="val" id="summary-burn">--</span></div>
+                <div class="stat-row"><span class="label">This Week</span><span class="val val-live" id="summary-this-week">--</span></div>
+                <div class="stat-row"><span class="label">Last Week</span><span class="val val-cold" id="summary-last-week">--</span></div>
+                <div class="stat-row"><span class="label">Avg/Day</span><span class="val val-rate" id="summary-burn">--</span></div>
             </div>
         </div>
     </div>
@@ -1345,7 +1350,7 @@ body {
         <div class="card-title">Extra Usage</div>
         <div class="card-value dim" id="summary-extra-value">n/a</div>
         <div class="card-sub" id="summary-extra-detail">not enabled</div>
-        <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%; background:#ffb347"></div></div>
+        <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%"></div></div>
     </div>
 </div>
 
@@ -1465,10 +1470,10 @@ function pctClass(n) {
 
 var TOOLS = ['rtk', 'headroom', 'jcodemunch', 'jdocmunch'];
 var TOOL_COLOURS = {
-    rtk: '#00ff88',
-    headroom: '#00bfff',
-    jcodemunch: '#ff9f43',
-    jdocmunch: '#a55eea'
+    rtk: '#3b82f6',
+    headroom: '#8b5cf6',
+    jcodemunch: '#ec4899',
+    jdocmunch: '#14b8a6'
 };
 
 function renderSparkline(svgEl, points, tool) {
@@ -1546,7 +1551,8 @@ function updateDashboard(d) {
     var extraBar = document.getElementById('summary-extra-bar');
     if (cu.active && cu.extra_usage_enabled) {
         extraCard.className = 'card card-extra';
-        extraVal.className = 'card-value';
+        var extraPct = cu.extra_usage_pct || 0;
+        extraVal.className = 'card-value ' + pctClass(extraPct);
         extraVal.textContent = (cu.extra_usage_pct != null ? cu.extra_usage_pct.toFixed(1) : '0') + '%';
         var used = cu.extra_usage_used;
         var limit = cu.extra_usage_monthly_limit;
@@ -1555,13 +1561,15 @@ function updateDashboard(d) {
         } else {
             extraDetail.textContent = 'active';
         }
-        extraBar.style.width = Math.min(100, Math.max(0, cu.extra_usage_pct || 0)) + '%';
+        extraBar.style.width = Math.min(100, Math.max(0, extraPct)) + '%';
+        extraBar.style.background = extraPct > 80 ? '#ff4444' : extraPct > 50 ? '#ffcc00' : '#00ff88';
     } else {
         extraCard.className = 'card card-extra inactive';
         extraVal.className = 'card-value dim';
         extraVal.textContent = 'n/a';
         extraDetail.textContent = 'not enabled';
         extraBar.style.width = '0%';
+        extraBar.style.background = '#333';
     }
 
     // RTK
