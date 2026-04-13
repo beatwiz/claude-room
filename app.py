@@ -855,8 +855,8 @@ def collect_all():
     # doesn't reference per-tool histories. This cuts ~15KB per SSE tick.
     for tool_name in ("rtk", "headroom", "jcodemunch", "jdocmunch"):
         tool_dict = results.get(tool_name)
-        if isinstance(tool_dict, dict) and "history" in tool_dict:
-            del tool_dict["history"]
+        if isinstance(tool_dict, dict):
+            tool_dict.pop("history", None)
 
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -1222,22 +1222,61 @@ body {
     text-transform: uppercase;
     margin-bottom: 8px;
 }
-.summary-cards .card-big {
+.summary-cards .card-value {
     font-size: 32px;
     font-weight: 600;
     color: #fff;
     line-height: 1.1;
+    margin-bottom: 0;
 }
-.summary-cards .card-big.dim {
+.summary-cards .card-value.dim {
     color: #666;
 }
-.summary-cards .card-combined .card-big {
+.summary-cards .card-combined .card-value {
     font-size: 42px;
+    color: #00ff88;
 }
-.summary-cards .card-detail {
+.summary-cards .card-sub {
     color: #aaa;
     font-size: 13px;
     margin-top: 4px;
+    margin-bottom: 0;
+}
+.summary-cards .card-extra .progress-track {
+    margin-top: 12px;
+}
+.summary-cards .combined-body {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    margin-top: 8px;
+}
+.summary-cards .combined-body .card-value {
+    flex: 0 0 auto;
+}
+.summary-cards .combined-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.summary-cards .combined-stats .stat-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: baseline;
+}
+.summary-cards .combined-stats .label {
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 10px;
+}
+.summary-cards .combined-stats .val {
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
 }
 .summary-cards .card-sub-row {
     display: flex;
@@ -1284,12 +1323,13 @@ body {
 <div class="summary-cards">
     <div class="card card-combined" id="summary-combined">
         <div class="card-title">Combined Tokens Saved</div>
-        <div class="card-big" id="summary-combined-value">--</div>
-        <div class="card-detail" id="summary-combined-detail">--</div>
-        <div class="card-sub-row" id="summary-combined-subs">
-            <span><span class="label">this week</span><span class="val" id="summary-this-week">--</span></span>
-            <span><span class="label">avg/day</span><span class="val" id="summary-burn">--</span></span>
-            <span><span class="label">reset</span><span class="val" id="summary-reset">--</span></span>
+        <div class="combined-body">
+            <div class="card-value" id="summary-combined-value">--</div>
+            <div class="combined-stats">
+                <div class="stat-row"><span class="label">This Week</span><span class="val" id="summary-this-week">--</span></div>
+                <div class="stat-row"><span class="label">Last Week</span><span class="val" id="summary-last-week">--</span></div>
+                <div class="stat-row"><span class="label">Avg/Day</span><span class="val" id="summary-burn">--</span></div>
+            </div>
         </div>
     </div>
     <div class="card card-claude" id="summary-claude">
@@ -1303,9 +1343,9 @@ body {
     </div>
     <div class="card card-extra inactive" id="summary-extra">
         <div class="card-title">Extra Usage</div>
-        <div class="card-big dim" id="summary-extra-value">n/a</div>
-        <div class="card-detail" id="summary-extra-detail">not enabled</div>
-        <div class="progress-track" style="margin-top:12px"><div class="progress-fill" id="summary-extra-bar" style="width:0%; background:#ffb347"></div></div>
+        <div class="card-value dim" id="summary-extra-value">n/a</div>
+        <div class="card-sub" id="summary-extra-detail">not enabled</div>
+        <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%; background:#ffb347"></div></div>
     </div>
 </div>
 
@@ -1468,13 +1508,9 @@ function updateDashboard(d) {
 
     // --- Combined card ---
     document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
-    var hrLifetimeUsd = ((d.headroom || {}).lifetime_saved_usd) || 0;
-    document.getElementById('summary-combined-detail').textContent = hrLifetimeUsd > 0
-        ? ('$' + hrLifetimeUsd.toFixed(2) + ' via headroom')
-        : 'lifetime';
     document.getElementById('summary-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
+    document.getElementById('summary-last-week').textContent = w.last_week != null ? (w.last_week === 0 ? '0' : formatTokens(w.last_week, true)) : '--';
     document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
-    document.getElementById('summary-reset').textContent = w.reset_display || '--';
 
     // --- Claude Usage card ---
     var sessionEl = document.getElementById('summary-session-pct');
@@ -1510,7 +1546,7 @@ function updateDashboard(d) {
     var extraBar = document.getElementById('summary-extra-bar');
     if (cu.active && cu.extra_usage_enabled) {
         extraCard.className = 'card card-extra';
-        extraVal.className = 'card-big';
+        extraVal.className = 'card-value';
         extraVal.textContent = (cu.extra_usage_pct != null ? cu.extra_usage_pct.toFixed(1) : '0') + '%';
         var used = cu.extra_usage_used;
         var limit = cu.extra_usage_monthly_limit;
@@ -1522,7 +1558,7 @@ function updateDashboard(d) {
         extraBar.style.width = Math.min(100, Math.max(0, cu.extra_usage_pct || 0)) + '%';
     } else {
         extraCard.className = 'card card-extra inactive';
-        extraVal.className = 'card-big dim';
+        extraVal.className = 'card-value dim';
         extraVal.textContent = 'n/a';
         extraDetail.textContent = 'not enabled';
         extraBar.style.width = '0%';
