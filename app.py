@@ -75,11 +75,12 @@ _cached_versions = {
 
 
 def resolve_versions_once():
-    """Resolve tool versions once. Called by DashboardCollector.run() at thread startup."""
-    rtk_v = _run([RTK_BIN, "--version"])
+    """Resolve tool versions once. Called by DashboardCollector.run() at thread startup.
+    Per-tool precedence: TOOL_VERSION env var > binary --version > tool-specific fallback > "unknown"."""
+    rtk_v = os.environ.get("RTK_VERSION") or _run([RTK_BIN, "--version"])
     _cached_versions["rtk"] = rtk_v if rtk_v else "unknown"
 
-    jc_v = _run([JCODEMUNCH_BIN, "--version"])
+    jc_v = os.environ.get("JCODEMUNCH_VERSION") or _run([JCODEMUNCH_BIN, "--version"])
     if not jc_v:
         # Fallback: read version field from the mounted config.jsonc
         config_path = os.path.join(JCODEMUNCH_INDEX_DIR, "config.jsonc")
@@ -92,7 +93,7 @@ def resolve_versions_once():
             pass
     _cached_versions["jcodemunch"] = jc_v if jc_v else "unknown"
 
-    jd_v = _run([JDOCMUNCH_BIN, "--version"])
+    jd_v = os.environ.get("JDOCMUNCH_VERSION") or _run([JDOCMUNCH_BIN, "--version"])
     if not jd_v:
         raw = _run(["pipx", "list", "--short"])
         if raw:
