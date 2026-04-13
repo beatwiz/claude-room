@@ -1,5 +1,7 @@
 """Tests for the claude-tools-dashboard Flask app and its helpers."""
 
+import pytest
+
 
 def test_import_app():
     """Smoke test: the app module imports cleanly and exposes its Flask app."""
@@ -87,6 +89,7 @@ def test_flatten_snapshot_none_returns_ready_false():
     # Not ready
     assert flat["ready"] is False
     assert flat["timestamp"] is None
+    assert flat["combined_saved_usd"] is None
 
     # Claude fields are null (unknown != zero)
     assert flat["claude_active"] is False
@@ -245,6 +248,8 @@ def test_flatten_snapshot_full_payload():
 
     # Combined/weekly savings
     assert flat["combined_saved"] == 123456
+    # rate = 584.41 / 117309038; combined_usd = 584.41 + (50000+20000+13456)*rate
+    assert flat["combined_saved_usd"] == pytest.approx(584.41 + 83456 * (584.41 / 117309038))
     assert flat["this_week_saved"] == 8000
     assert flat["last_week_saved"] == 12000
     assert flat["burn_rate_daily"] == 1200
@@ -432,6 +437,34 @@ def test_status_route_not_ready(monkeypatch):
 
 
 # --- _same_reset_window ---
+
+
+def test_flatten_snapshot_no_usd_when_headroom_usd_missing():
+    """If headroom reports lifetime_saved but no lifetime_saved_usd, rate is unknown — don't synthesize $0."""
+    import app
+
+    snap = {
+        "timestamp": "2026-04-13T10:37:47+00:00",
+        "combined_saved": 100000,
+        "headroom": {
+            "active": True,
+            "health": "ok",
+            "version": "0.4.0",
+            "total_saved": 50000,
+            "lifetime_saved": 100000,
+            "lifetime_saved_usd": 0,
+        },
+        "rtk": {"active": True, "total_saved": 50000, "health": "ok", "version": "0.3.1"},
+        "jcodemunch": {"active": False, "health": "error", "version": "unknown", "total_saved": 0},
+        "jdocmunch": {"active": False, "health": "error", "version": "unknown", "total_saved": 0},
+        "claude_usage": {"active": False},
+        "weekly": {},
+        "sparklines": {},
+    }
+
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["combined_saved_usd"] is None
 
 
 def test_same_reset_window_identical_timestamps():

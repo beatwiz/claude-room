@@ -664,7 +664,11 @@ def _flatten_snapshot(snap):
 
     hr_lifetime = headroom.get("lifetime_saved") or 0
     hr_lifetime_usd = headroom.get("lifetime_saved_usd") or 0
-    usd_per_token = (hr_lifetime_usd / hr_lifetime) if hr_lifetime > 0 else None
+    usd_per_token = (
+        (hr_lifetime_usd / hr_lifetime)
+        if hr_lifetime > 0 and hr_lifetime_usd > 0
+        else None
+    )
     combined_saved_usd = None
     if usd_per_token is not None:
         non_headroom_tokens = (
@@ -1594,9 +1598,10 @@ function updateDashboard(d) {
     var jc = d.jcodemunch || {};
     var jd = d.jdocmunch || {};
 
-    var hrLifetime = hr.lifetime_saved || hr.total_saved || 0;
+    var hrLifetimeTokens = hr.lifetime_saved || 0;
     var hrLifetimeUsd = hr.lifetime_saved_usd || 0;
-    var usdPerToken = hrLifetime > 0 ? hrLifetimeUsd / hrLifetime : null;
+    var hrDisplayTokens = hrLifetimeTokens || hr.total_saved || 0;
+    var usdPerToken = (hrLifetimeTokens > 0 && hrLifetimeUsd > 0) ? hrLifetimeUsd / hrLifetimeTokens : null;
     function tokensToUsd(n) { return usdPerToken != null ? n * usdPerToken : null; }
     function tokensSavedSub(usd) {
         return usd != null ? 'tokens saved · $' + usd.toFixed(2) : 'tokens saved';
@@ -1679,8 +1684,8 @@ function updateDashboard(d) {
     if (hrDot) hrDot.className = 'health-dot health-' + hrHealth;
     document.getElementById('headroom-version').textContent = shortVersion(hr.version);
     if (hr.active) {
-        document.getElementById('headroom-value').textContent = formatTokens(hrLifetime);
-        document.getElementById('headroom-sub').textContent = tokensSavedSub(hrLifetimeUsd);
+        document.getElementById('headroom-value').textContent = formatTokens(hrDisplayTokens);
+        document.getElementById('headroom-sub').textContent = tokensSavedSub(usdPerToken != null ? hrLifetimeUsd : null);
         document.getElementById('headroom-bar').style.width = (hr.avg_savings_pct || 0) + '%';
         document.getElementById('headroom-stats').innerHTML =
             '<span><span class="label">efficiency</span> <span class="val">' + (hr.avg_savings_pct || 0) + '%</span></span>' +
