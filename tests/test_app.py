@@ -15,6 +15,7 @@ def test_import_app():
 CONTRACT_KEYS = [
     "ready",
     "timestamp",
+    "claude_active",
     "session_pct",
     "session_reset",
     "weekly_pct",
@@ -87,6 +88,7 @@ def test_flatten_snapshot_none_returns_ready_false():
     assert flat["timestamp"] is None
 
     # Claude fields are null (unknown != zero)
+    assert flat["claude_active"] is False
     assert flat["session_pct"] is None
     assert flat["session_reset"] is None
     assert flat["weekly_pct"] is None
@@ -231,6 +233,7 @@ def test_flatten_snapshot_full_payload():
     assert flat["timestamp"] == "2026-04-13T10:37:47.613296+00:00"
 
     # Claude usage
+    assert flat["claude_active"] is True
     assert flat["session_pct"] == 42
     assert flat["session_reset"] == "2026-04-13T15:00:00+00:00"
     assert flat["weekly_pct"] == 18

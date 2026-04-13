@@ -657,6 +657,7 @@ def _flatten_snapshot(snap):
         "ready": ready,
         "timestamp": snap.get("timestamp"),
 
+        "claude_active": claude_active,
         "session_pct": _claude("session_pct"),
         "session_reset": _claude("session_reset"),
         "weekly_pct": _claude("weekly_pct"),
