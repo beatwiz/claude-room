@@ -44,10 +44,10 @@ _last_good = {}
 _usage_cache = None
 _usage_cache_time = 0
 _sparkline_buffers = {
-    "rtk": deque(maxlen=60),
-    "headroom": deque(maxlen=60),
-    "jcodemunch": deque(maxlen=60),
-    "jdocmunch": deque(maxlen=60),
+    "rtk": deque(maxlen=240),
+    "headroom": deque(maxlen=240),
+    "jcodemunch": deque(maxlen=240),
+    "jdocmunch": deque(maxlen=240),
 }
 _headroom_last_total = 0
 _headroom_history = []
@@ -1264,9 +1264,15 @@ body {
     align-items: center;
     gap: 48px;
 }
-.summary-cards .combined-body .card-value {
+.summary-cards .combined-left {
     flex: 1 1 0;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+.summary-cards .val-time {
+    color: #bbb;
+    font-weight: 600;
 }
 .summary-cards .combined-stats {
     display: flex;
@@ -1356,10 +1362,12 @@ body {
         <div class="card-header">
             <span class="health-dot health-ok" id="summary-combined-health"></span>
             <span class="card-name">Combined</span>
-            <span class="card-version">lifetime</span>
         </div>
         <div class="combined-body">
-            <div class="card-value" id="summary-combined-value">--</div>
+            <div class="combined-left">
+                <div class="card-value" id="summary-combined-value">--</div>
+                <div class="card-sub">tokens saved</div>
+            </div>
             <div class="combined-stats">
                 <div class="stat-row"><span class="label">This Week</span><span class="val val-live" id="summary-this-week">--</span></div>
                 <div class="stat-row"><span class="label">Last Week</span><span class="val val-cold" id="summary-last-week">--</span></div>
@@ -1371,11 +1379,11 @@ body {
         <div class="card-header">
             <span class="health-dot health-error" id="summary-claude-health"></span>
             <span class="card-name">Claude Usage</span>
-            <span class="card-version" id="summary-claude-reset">--</span>
         </div>
         <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
         <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
         <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
+        <div class="usage-row"><span class="label">Reset</span><span class="val val-time" id="summary-claude-reset">--</span></div>
     </div>
     <div class="card card-extra inactive" id="summary-extra">
         <div class="card-header">
@@ -1628,10 +1636,9 @@ function updateDashboard(d) {
     document.getElementById('headroom-version').textContent = shortVersion(hr.version);
     if (hr.active) {
         var hrLifetime = hr.lifetime_saved || hr.total_saved || 0;
-        var hrLifetimeUsd = hr.lifetime_saved_usd || 0;
         var hrSessionUsd = hr.session_saved_usd || 0;
         document.getElementById('headroom-value').textContent = formatTokens(hrLifetime);
-        document.getElementById('headroom-sub').textContent = 'lifetime · $' + hrLifetimeUsd.toFixed(2) + ' saved';
+        document.getElementById('headroom-sub').textContent = 'tokens saved';
         document.getElementById('headroom-bar').style.width = (hr.avg_savings_pct || 0) + '%';
         document.getElementById('headroom-stats').innerHTML =
             '<span><span class="label">session</span> <span class="val">$' + hrSessionUsd.toFixed(2) + '</span></span>' +
