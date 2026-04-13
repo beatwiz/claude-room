@@ -1209,12 +1209,10 @@ body {
 }
 
 @media (max-width: 1000px) {
-    .cards, .summary-cards { grid-template-columns: repeat(2, 1fr); }
-    .summary-cards .card.card-combined { grid-column: span 2; }
+    .cards { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 550px) {
-    .cards, .summary-cards { grid-template-columns: 1fr; }
-    .summary-cards .card.card-combined { grid-column: auto; }
+    .cards { grid-template-columns: 1fr; }
 }
 /* Summary cards */
 .summary-cards {
@@ -1251,7 +1249,7 @@ body {
 .summary-cards .combined-body {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 48px;
 }
 .summary-cards .combined-body .card-value {
     flex: 1 1 0;
@@ -1297,11 +1295,32 @@ body {
 .summary-cards .usage-row .val.pct-green { color: #00ff88; }
 .summary-cards .usage-row .val.pct-yellow { color: #ffcc00; }
 .summary-cards .usage-row .val.pct-red { color: #ff4444; }
+@media (max-width: 1000px) {
+    .summary-cards { grid-template-columns: repeat(2, 1fr); }
+    .summary-cards .card.card-combined { grid-column: span 2; }
+}
 @media (max-width: 600px) {
     .header { flex-wrap: wrap; justify-content: center; gap: 4px; }
     .header-left { width: 100%; justify-content: center; }
     .header-right { font-size: 12px; }
     html, body { overflow: auto; height: auto; }
+    .summary-cards { grid-template-columns: 1fr; }
+    .summary-cards .card.card-combined { grid-column: auto; }
+    .summary-cards .card-header {
+        flex-wrap: wrap;
+        gap: 4px 8px;
+    }
+    .summary-cards .combined-body {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 16px;
+    }
+    .summary-cards .combined-body .card-value {
+        flex: none;
+    }
+    .summary-cards .combined-stats {
+        flex: none;
+    }
 }
 </style>
 </head>
