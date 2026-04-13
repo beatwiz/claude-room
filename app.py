@@ -1206,35 +1206,68 @@ body {
 }
 
 @media (max-width: 1000px) {
-    .cards { grid-template-columns: repeat(2, 1fr); }
+    .cards, .summary-cards { grid-template-columns: repeat(2, 1fr); }
+    .summary-cards .card.card-combined { grid-column: span 2; }
 }
 @media (max-width: 550px) {
-    .cards { grid-template-columns: 1fr; }
+    .cards, .summary-cards { grid-template-columns: 1fr; }
+    .summary-cards .card.card-combined { grid-column: auto; }
 }
-/* Stats ticker */
-.ticker {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 6px 8px;
-    padding: 6px 0;
-    margin-bottom: 16px;
+/* Summary cards */
+.summary-cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.summary-cards .card.card-combined {
+    grid-column: span 2;
+}
+.summary-cards .card-title {
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: #888;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+.summary-cards .card-big {
+    font-size: 32px;
+    font-weight: 600;
+    color: #fff;
+    line-height: 1.1;
+}
+.summary-cards .card-big.dim {
+    color: #666;
+}
+.summary-cards .card-combined .card-big {
+    font-size: 42px;
+}
+.summary-cards .card-detail {
+    color: #aaa;
     font-size: 13px;
-    color: #889;
+    margin-top: 4px;
 }
-.ticker .sep {
-    color: #556;
+.summary-cards .card-sub-row {
+    display: flex;
+    gap: 14px;
+    margin-top: 14px;
+    font-size: 12px;
+    color: #888;
+    flex-wrap: wrap;
 }
-.ticker .tv {
-    color: #00bfff;
-    font-weight: bold;
+.summary-cards .card-sub-row .label { color: #666; }
+.summary-cards .card-sub-row .val { color: #ccc; margin-left: 4px; }
+.summary-cards .usage-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 4px 0;
+    font-size: 13px;
+    color: #aaa;
 }
-.ticker .pct-green { color: #00ff88; }
-.ticker .pct-yellow { color: #ffcc00; }
-.ticker .pct-red { color: #ff4444; }
+.summary-cards .usage-row .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.summary-cards .usage-row .val { color: #fff; font-weight: 600; }
 @media (max-width: 600px) {
-    .ticker { font-size: 11px; gap: 3px 5px; }
     .header { flex-wrap: wrap; justify-content: center; gap: 4px; }
     .header-left { width: 100%; justify-content: center; }
     .header-centre { font-size: 12px; }
@@ -1250,25 +1283,36 @@ body {
         <div class="pulse-dot"></div>
         <div class="header-title">CLAUDE TOOLS</div>
     </a>
-    <div class="header-centre" id="combined">COMBINED: <span>0</span> tokens saved</div>
     <div class="header-right" id="clock">--:--:-- &blacksquare; -- --- ----</div>
 </div>
 
-<!-- Stats Ticker -->
-<div class="ticker" id="ticker">
-    <span title="Tokens saved by all tools since your weekly Claude reset">Saved This Week: <span class="tv" id="tk-this-week">--</span></span>
-    <span class="sep">|</span>
-    <span title="Total tokens saved during the previous weekly period">Saved Last Week: <span class="tv" id="tk-last-week">--</span></span>
-    <span class="sep">|</span>
-    <span title="Average daily token savings this week">Avg: ~<span class="tv" id="tk-burn">--</span>/day</span>
-    <span class="sep">|</span>
-    <span title="When your Claude weekly usage allocation resets">Reset: <span class="tv" id="tk-reset">--</span></span>
-    <span class="sep">|</span>
-    <span title="Claude usage in your current 5-hour rolling window">5-Hour Window: <span id="tk-session-pct" class="tv">--</span></span>
-    <span class="sep">|</span>
-    <span title="Claude usage across your 7-day rolling period">Weekly: <span id="tk-weekly-pct" class="tv">--</span></span>
-    <span class="sep">|</span>
-    <span title="Sonnet-only usage across your 7-day rolling period">Sonnet: <span id="tk-sonnet-pct" class="tv">--</span></span>
+<!-- Summary Cards -->
+<div class="summary-cards">
+    <div class="card card-combined" id="summary-combined">
+        <div class="card-title">Combined Tokens Saved</div>
+        <div class="card-big" id="summary-combined-value">--</div>
+        <div class="card-detail" id="summary-combined-detail">--</div>
+        <div class="card-sub-row" id="summary-combined-subs">
+            <span><span class="label">this week</span><span class="val" id="summary-this-week">--</span></span>
+            <span><span class="label">avg/day</span><span class="val" id="summary-burn">--</span></span>
+            <span><span class="label">reset</span><span class="val" id="summary-reset">--</span></span>
+        </div>
+    </div>
+    <div class="card card-claude" id="summary-claude">
+        <div class="card-title">Claude Usage</div>
+        <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
+        <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
+        <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
+        <div class="card-sub-row">
+            <span><span class="label">reset</span><span class="val" id="summary-claude-reset">--</span></span>
+        </div>
+    </div>
+    <div class="card card-extra inactive" id="summary-extra">
+        <div class="card-title">Extra Usage</div>
+        <div class="card-big dim" id="summary-extra-value">n/a</div>
+        <div class="card-detail" id="summary-extra-detail">not enabled</div>
+        <div class="progress-track" style="margin-top:12px"><div class="progress-fill" id="summary-extra-bar" style="width:0%; background:#ffb347"></div></div>
+    </div>
 </div>
 
 <!-- Cards -->
@@ -1424,41 +1468,70 @@ function renderSparkline(svgEl, points, tool) {
 }
 
 function updateDashboard(d) {
-    // Combined
-    document.getElementById('combined').innerHTML =
-        'COMBINED: <span>' + formatTokens(d.combined_saved || 0) + '</span> tokens saved';
-
-    // Ticker
+    // Summary cards
     var w = d.weekly || {};
     var cu = d.claude_usage || {};
-    document.getElementById('tk-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
-    document.getElementById('tk-last-week').textContent = w.last_week ? formatTokens(w.last_week, true) : '--';
-    document.getElementById('tk-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
-    document.getElementById('tk-reset').textContent = w.reset_display || '--';
 
-    var sessionEl = document.getElementById('tk-session-pct');
-    var weeklyEl = document.getElementById('tk-weekly-pct');
+    // --- Combined card ---
+    document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
+    var hrLifetimeUsd = ((d.headroom || {}).lifetime_saved_usd) || 0;
+    document.getElementById('summary-combined-detail').textContent = hrLifetimeUsd > 0
+        ? ('$' + hrLifetimeUsd.toFixed(2) + ' via headroom')
+        : 'lifetime';
+    document.getElementById('summary-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
+    document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
+    document.getElementById('summary-reset').textContent = w.reset_display || '--';
+
+    // --- Claude Usage card ---
+    var sessionEl = document.getElementById('summary-session-pct');
+    var weeklyEl = document.getElementById('summary-weekly-pct');
+    var sonnetEl = document.getElementById('summary-sonnet-pct');
     if (cu.active && cu.session_pct != null) {
         sessionEl.textContent = cu.session_pct + '%';
-        sessionEl.className = pctClass(cu.session_pct);
+        sessionEl.className = 'val ' + pctClass(cu.session_pct);
     } else {
         sessionEl.textContent = '--';
-        sessionEl.className = 'tv';
+        sessionEl.className = 'val';
     }
     if (cu.active && cu.weekly_pct != null) {
         weeklyEl.textContent = cu.weekly_pct + '%';
-        weeklyEl.className = pctClass(cu.weekly_pct);
+        weeklyEl.className = 'val ' + pctClass(cu.weekly_pct);
     } else {
         weeklyEl.textContent = '--';
-        weeklyEl.className = 'tv';
+        weeklyEl.className = 'val';
     }
-    var sonnetEl = document.getElementById('tk-sonnet-pct');
     if (cu.active && cu.sonnet_pct != null) {
         sonnetEl.textContent = cu.sonnet_pct + '%';
-        sonnetEl.className = pctClass(cu.sonnet_pct);
+        sonnetEl.className = 'val ' + pctClass(cu.sonnet_pct);
     } else {
         sonnetEl.textContent = '--';
-        sonnetEl.className = 'tv';
+        sonnetEl.className = 'val';
+    }
+    document.getElementById('summary-claude-reset').textContent = w.reset_display || '--';
+
+    // --- Extra Usage card ---
+    var extraCard = document.getElementById('summary-extra');
+    var extraVal = document.getElementById('summary-extra-value');
+    var extraDetail = document.getElementById('summary-extra-detail');
+    var extraBar = document.getElementById('summary-extra-bar');
+    if (cu.active && cu.extra_usage_enabled) {
+        extraCard.className = 'card card-extra';
+        extraVal.className = 'card-big';
+        extraVal.textContent = (cu.extra_usage_pct != null ? cu.extra_usage_pct.toFixed(1) : '0') + '%';
+        var used = cu.extra_usage_used;
+        var limit = cu.extra_usage_monthly_limit;
+        if (used != null && limit != null) {
+            extraDetail.textContent = used.toLocaleString() + ' of ' + limit.toLocaleString() + ' credits';
+        } else {
+            extraDetail.textContent = 'active';
+        }
+        extraBar.style.width = Math.min(100, Math.max(0, cu.extra_usage_pct || 0)) + '%';
+    } else {
+        extraCard.className = 'card card-extra inactive';
+        extraVal.className = 'card-big dim';
+        extraVal.textContent = 'n/a';
+        extraDetail.textContent = 'not enabled';
+        extraBar.style.width = '0%';
     }
 
     // RTK
