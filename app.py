@@ -979,14 +979,6 @@ body {
     letter-spacing: 3px;
     font-weight: bold;
 }
-.header-centre {
-    color: #888;
-    font-size: 13px;
-}
-.header-centre span {
-    color: #00ff88;
-    font-weight: bold;
-}
 .header-right {
     color: #666;
     font-size: 13px;
@@ -1267,10 +1259,12 @@ body {
 }
 .summary-cards .usage-row .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
 .summary-cards .usage-row .val { color: #fff; font-weight: 600; }
+.summary-cards .usage-row .val.pct-green { color: #00ff88; }
+.summary-cards .usage-row .val.pct-yellow { color: #ffcc00; }
+.summary-cards .usage-row .val.pct-red { color: #ff4444; }
 @media (max-width: 600px) {
     .header { flex-wrap: wrap; justify-content: center; gap: 4px; }
     .header-left { width: 100%; justify-content: center; }
-    .header-centre { font-size: 12px; }
     .header-right { font-size: 12px; }
     html, body { overflow: auto; height: auto; }
 }
