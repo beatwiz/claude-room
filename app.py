@@ -1579,20 +1579,28 @@ function renderSparkline(svgEl, points, tool) {
 }
 
 function updateDashboard(d) {
-    // Summary cards
     var w = d.weekly || {};
     var cu = d.claude_usage || {};
+    var rtk = d.rtk || {};
+    var hr = d.headroom || {};
+    var jc = d.jcodemunch || {};
+    var jd = d.jdocmunch || {};
+
+    var hrLifetime = hr.lifetime_saved || hr.total_saved || 0;
+    var hrLifetimeUsd = hr.lifetime_saved_usd || 0;
+    var usdPerToken = hrLifetime > 0 ? hrLifetimeUsd / hrLifetime : null;
+    function tokensToUsd(n) { return usdPerToken != null ? n * usdPerToken : null; }
+    function tokensSavedSub(usd) {
+        return usd != null ? 'tokens saved · $' + usd.toFixed(2) : 'tokens saved';
+    }
 
     // --- Combined card ---
     document.getElementById('summary-combined-health').className = 'health-dot ' + (d.ready === false ? 'health-error' : 'health-ok');
     document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
     var combinedUsdEl = document.getElementById('summary-combined-usd');
-    var hrLifetime = (d.headroom || {}).lifetime_saved || 0;
-    var hrLifetimeUsd = (d.headroom || {}).lifetime_saved_usd || 0;
-    var rate = hrLifetime > 0 ? hrLifetimeUsd / hrLifetime : null;
-    if (rate != null) {
-        var nonHrTokens = ((d.rtk || {}).total_saved || 0) + ((d.jcodemunch || {}).total_saved || 0) + ((d.jdocmunch || {}).total_saved || 0);
-        var combinedUsd = hrLifetimeUsd + nonHrTokens * rate;
+    if (usdPerToken != null) {
+        var nonHrTokens = (rtk.total_saved || 0) + (jc.total_saved || 0) + (jd.total_saved || 0);
+        var combinedUsd = hrLifetimeUsd + nonHrTokens * usdPerToken;
         combinedUsdEl.textContent = '≈ $' + combinedUsd.toFixed(2) + ' saved';
     } else {
         combinedUsdEl.textContent = '--';
@@ -1638,7 +1646,6 @@ function updateDashboard(d) {
     }
 
     // RTK
-    var rtk = d.rtk || {};
     var rtkCard = document.getElementById('rtk-card');
     rtkCard.className = rtk.active ? 'card' : 'card inactive';
     var rtkHealth = rtk.health || 'error';
@@ -1646,7 +1653,7 @@ function updateDashboard(d) {
     if (rtkDot) rtkDot.className = 'health-dot health-' + rtkHealth;
     document.getElementById('rtk-version').textContent = shortVersion(rtk.version);
     document.getElementById('rtk-value').textContent = rtk.active ? formatTokens(rtk.total_saved || 0) : '--';
-    document.getElementById('rtk-sub').textContent = 'tokens saved';
+    document.getElementById('rtk-sub').textContent = tokensSavedSub(rtk.active ? tokensToUsd(rtk.total_saved || 0) : null);
     document.getElementById('rtk-bar').style.width = (rtk.avg_savings_pct || 0) + '%';
     if (rtk.active && rtk.total_commands) {
         var avgMs = rtk.total_time_ms / rtk.total_commands;
@@ -1657,7 +1664,6 @@ function updateDashboard(d) {
     }
 
     // Headroom
-    var hr = d.headroom || {};
     var hrCard = document.getElementById('headroom-card');
     hrCard.className = hr.active ? 'card' : 'card inactive';
     var hrHealth = hr.health || 'error';
@@ -1665,13 +1671,11 @@ function updateDashboard(d) {
     if (hrDot) hrDot.className = 'health-dot health-' + hrHealth;
     document.getElementById('headroom-version').textContent = shortVersion(hr.version);
     if (hr.active) {
-        var hrLifetime = hr.lifetime_saved || hr.total_saved || 0;
-        var hrSessionUsd = hr.session_saved_usd || 0;
         document.getElementById('headroom-value').textContent = formatTokens(hrLifetime);
-        document.getElementById('headroom-sub').textContent = 'tokens saved';
+        document.getElementById('headroom-sub').textContent = tokensSavedSub(hrLifetimeUsd);
         document.getElementById('headroom-bar').style.width = (hr.avg_savings_pct || 0) + '%';
         document.getElementById('headroom-stats').innerHTML =
-            '<span><span class="label">session</span> <span class="val">$' + hrSessionUsd.toFixed(2) + '</span></span>' +
+            '<span><span class="label">efficiency</span> <span class="val">' + (hr.avg_savings_pct || 0) + '%</span></span>' +
             '<span><span class="label">cache</span> <span class="val">' + Math.round(hr.cache_hit_rate || 0) + '%</span></span>' +
             '<span><span class="label">req</span> <span class="val">' + (hr.requests_total || 0) + '</span></span>';
     } else {
@@ -1683,7 +1687,6 @@ function updateDashboard(d) {
     }
 
     // jCodeMunch
-    var jc = d.jcodemunch || {};
     var jcCard = document.getElementById('jcodemunch-card');
     jcCard.className = jc.active ? 'card' : 'card inactive';
     var jcHealth = jc.health || 'error';
@@ -1691,7 +1694,7 @@ function updateDashboard(d) {
     if (jcDot) jcDot.className = 'health-dot health-' + jcHealth;
     document.getElementById('jcodemunch-version').textContent = shortVersion(jc.version);
     document.getElementById('jcodemunch-value').textContent = jc.active ? formatTokens(jc.total_saved || 0) : '--';
-    document.getElementById('jcodemunch-sub').textContent = 'tokens saved';
+    document.getElementById('jcodemunch-sub').textContent = tokensSavedSub(jc.active ? tokensToUsd(jc.total_saved || 0) : null);
     document.getElementById('jcodemunch-bar').style.width = (jc.freshness || 0) + '%';
     if (jc.active) {
         document.getElementById('jcodemunch-stats').innerHTML =
@@ -1701,7 +1704,6 @@ function updateDashboard(d) {
     }
 
     // jDocMunch
-    var jd = d.jdocmunch || {};
     var jdCard = document.getElementById('jdocmunch-card');
     jdCard.className = jd.active ? 'card' : 'card inactive';
     var jdHealth = jd.health || 'error';
@@ -1709,7 +1711,7 @@ function updateDashboard(d) {
     if (jdDot) jdDot.className = 'health-dot health-' + jdHealth;
     document.getElementById('jdocmunch-version').textContent = shortVersion(jd.version);
     document.getElementById('jdocmunch-value').textContent = jd.active ? formatTokens(jd.total_saved || 0) : '--';
-    document.getElementById('jdocmunch-sub').textContent = 'tokens saved';
+    document.getElementById('jdocmunch-sub').textContent = tokensSavedSub(jd.active ? tokensToUsd(jd.total_saved || 0) : null);
     document.getElementById('jdocmunch-bar').style.width = (jd.freshness || 0) + '%';
     if (jd.active) {
         document.getElementById('jdocmunch-stats').innerHTML =
