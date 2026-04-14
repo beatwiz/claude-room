@@ -43,6 +43,7 @@ WEEKLY_CACHE_DIR = os.environ.get("WEEKLY_CACHE_DIR", os.path.join(HOME, ".cache
 _last_good = {}
 _usage_cache = None
 _usage_cache_time = 0
+_usage_cache_cred_mtime = 0
 _sparkline_buffers = {
     "rtk": deque(maxlen=240),
     "headroom": deque(maxlen=240),
@@ -462,11 +463,26 @@ def _read_oauth_token():
 
 
 def collect_claude_usage():
-    """Fetch Claude usage from Anthropic API with 3-minute cache."""
-    global _usage_cache, _usage_cache_time
+    """Fetch Claude usage from Anthropic API with a 3-minute cache.
+
+    The cache is also invalidated as soon as the credentials file mtime
+    advances, so an external refresher writing a new token is picked up
+    on the next collector tick (~0.25s) instead of waiting up to 3 min.
+    """
+    global _usage_cache, _usage_cache_time, _usage_cache_cred_mtime
 
     now = time.time()
-    if _usage_cache and (now - _usage_cache_time) < USAGE_POLL_INTERVAL:
+    try:
+        cred_mtime = os.path.getmtime(CLAUDE_CREDENTIALS)
+    except OSError:
+        cred_mtime = 0
+
+    cache_fresh = (
+        _usage_cache
+        and (now - _usage_cache_time) < USAGE_POLL_INTERVAL
+        and cred_mtime <= _usage_cache_cred_mtime
+    )
+    if cache_fresh:
         return _usage_cache
 
     token = _read_oauth_token()
@@ -502,6 +518,7 @@ def collect_claude_usage():
         }
         _usage_cache = result
         _usage_cache_time = now
+        _usage_cache_cred_mtime = cred_mtime
         return result
     except HTTPError as e:
         if e.code == 429:
