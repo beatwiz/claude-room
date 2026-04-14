@@ -439,6 +439,41 @@ def test_status_route_not_ready(monkeypatch):
 # --- _same_reset_window ---
 
 
+def test_weekly_cache_migration_drops_pre_v2_schema(tmp_path, monkeypatch):
+    """An old-schema weekly cache must be discarded so the new baseline can re-seed."""
+    import app
+
+    cache_dir = tmp_path / "dash"
+    cache_dir.mkdir()
+    cache_path = cache_dir / "weekly.json"
+    cache_path.write_text('{"current_week_baseline": 12345, "last_week_savings": 678}')
+    monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(cache_dir))
+
+    loaded = app._load_weekly_cache()
+
+    assert loaded == {}
+
+
+def test_weekly_cache_save_stamps_schema_version(tmp_path, monkeypatch):
+    """Saves always include the current schema version so load() accepts them."""
+    import app
+    import json as _json_mod
+
+    cache_dir = tmp_path / "dash"
+    monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(cache_dir))
+
+    app._save_weekly_cache({"current_week_baseline": 100, "last_week_savings": 0})
+
+    cache_path = cache_dir / "weekly.json"
+    saved = _json_mod.loads(cache_path.read_text())
+    assert saved["schema_version"] == app.WEEKLY_CACHE_SCHEMA_VERSION
+    assert saved["current_week_baseline"] == 100
+
+    # And load() accepts it and returns the full payload.
+    loaded = app._load_weekly_cache()
+    assert loaded["current_week_baseline"] == 100
+
+
 def test_flatten_snapshot_no_usd_when_headroom_usd_missing():
     """If headroom reports lifetime_saved but no lifetime_saved_usd, rate is unknown — don't synthesize $0."""
     import app

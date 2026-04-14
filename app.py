@@ -236,8 +236,8 @@ def collect_headroom():
             latency = raw.get("latency") or {}
             prefix_totals = ((raw.get("prefix_cache") or {}).get("totals") or {})
 
-            total_saved = tokens_section.get("saved", 0)
-            avg_pct = round(tokens_section.get("savings_percent", 0), 1)
+            total_saved = tokens_section.get("saved") or 0
+            avg_pct = round(tokens_section.get("savings_percent") or 0, 1)
 
             if _headroom_last_total > 0 and total_saved > _headroom_last_total:
                 delta = total_saved - _headroom_last_total
@@ -267,10 +267,10 @@ def collect_headroom():
                 "lifetime_saved": persist.get("tokens_saved", 0),
                 "session_saved_usd": display.get("compression_savings_usd", 0),
                 "lifetime_saved_usd": persist.get("compression_savings_usd", 0),
-                "cache_hit_rate": round(prefix_totals.get("hit_rate", 0), 1),
-                "requests_total": req_stats.get("total", 0),
-                "requests_failed": req_stats.get("failed", 0),
-                "avg_latency_ms": round(latency.get("average_ms", 0), 1),
+                "cache_hit_rate": round(prefix_totals.get("hit_rate") or 0, 1),
+                "requests_total": req_stats.get("total") or 0,
+                "requests_failed": req_stats.get("failed") or 0,
+                "avg_latency_ms": round(latency.get("average_ms") or 0, 1),
                 "history": list(_headroom_history),
             }
         except (URLError, OSError, json.JSONDecodeError):
@@ -512,24 +512,38 @@ def collect_claude_usage():
         return _usage_cache
 
 
+WEEKLY_CACHE_SCHEMA_VERSION = 2
+
+
 def _load_weekly_cache():
-    """Load weekly savings snapshot from disk."""
+    """Load weekly savings snapshot from disk.
+
+    Drops pre-v2 caches: the baseline stored in v1 was written against the
+    old combined_saved definition (sum of headroom.total_saved + others).
+    The v2 definition uses headroom.lifetime_saved, so the old baseline is
+    no longer comparable and would produce wildly wrong this_week/last_week
+    numbers after upgrade. Returning {} forces collect_all's first-run
+    path to re-seed the baseline against the new combined_saved.
+    """
     path = os.path.join(WEEKLY_CACHE_DIR, "weekly.json")
     try:
-        if os.path.exists(path):
-            with open(path) as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if data.get("schema_version", 1) < WEEKLY_CACHE_SCHEMA_VERSION:
+        return {}
+    return data
 
 
 def _save_weekly_cache(data):
     """Save weekly savings snapshot to disk."""
     os.makedirs(WEEKLY_CACHE_DIR, exist_ok=True)
     path = os.path.join(WEEKLY_CACHE_DIR, "weekly.json")
+    payload = dict(data)
+    payload["schema_version"] = WEEKLY_CACHE_SCHEMA_VERSION
     with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(payload, f, indent=2)
 
 
 def _group_history(entries):
