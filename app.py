@@ -1155,7 +1155,7 @@ body {
     color: #aaa;
 }
 .cards .card-usage .usage-row .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
-.cards .card-usage .usage-row .val { color: #fff; font-weight: 600; }
+.cards .card-usage .usage-row .val { color: #fff; font-weight: 600; font-size: 12px; }
 .cards .card-usage .usage-row .val.pct-green { color: #00ff88; }
 .cards .card-usage .usage-row .val.pct-yellow { color: #ffcc00; }
 .cards .card-usage .usage-row .val.pct-red { color: #ff4444; }
@@ -1321,8 +1321,7 @@ body {
         <div class="card-sub" id="summary-combined-sub">tokens saved</div>
         <div class="card-stats" id="summary-combined-stats">
             <span><span class="label">this week</span> <span class="val" id="summary-this-week">--</span></span>
-            <span><span class="label">last week</span> <span class="val" id="summary-last-week">--</span></span>
-            <span><span class="label">avg/day</span> <span class="val" id="summary-burn">--</span></span>
+            <span><span class="label">daily average</span> <span class="val" id="summary-burn">--</span></span>
         </div>
     </div>
 
@@ -1546,7 +1545,6 @@ function updateDashboard(d) {
     }
     document.getElementById('summary-combined-sub').textContent = tokensSavedSub(combinedUsd);
     document.getElementById('summary-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
-    document.getElementById('summary-last-week').textContent = w.last_week != null ? (w.last_week === 0 ? '0' : formatTokens(w.last_week, true)) : '--';
     document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
 
     // --- Usage card (merged Claude + Extra with toggle) ---
