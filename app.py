@@ -1107,18 +1107,6 @@ body {
 .card-stats .val { color: #aaa; }
 .sparkline-container { margin-bottom: 6px; }
 .sparkline-container svg { width: 100%; height: 35px; }
-.card-delta {
-    font-size: 12px;
-    color: #555;
-}
-.card-delta.active {
-    color: #00ff88;
-    animation: flash 0.5s;
-}
-@keyframes flash {
-    0% { opacity: 0.3; }
-    100% { opacity: 1; }
-}
 
 /* Combined + Usage card specifics */
 .cards .card-combined .card-value { color: #00ff88; }
@@ -1355,7 +1343,6 @@ body {
         </div>
         <div class="progress-track"><div class="progress-fill fill-rtk" id="rtk-bar" style="width:0%"></div></div>
         <div class="sparkline-container"><svg id="rtk-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="rtk-delta"></div>
     </div>
 
     <!-- Headroom -->
@@ -1374,7 +1361,6 @@ body {
         </div>
         <div class="progress-track"><div class="progress-fill fill-headroom" id="headroom-bar" style="width:0%"></div></div>
         <div class="sparkline-container"><svg id="headroom-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="headroom-delta"></div>
     </div>
 
     <!-- Usage (merged Claude / Extra with toggle) -->
@@ -1662,16 +1648,6 @@ function updateDashboard(d) {
             var sp = d.sparklines[t];
             var pts = sp ? (sp.points || sp) : [];
             renderSparkline(document.getElementById(t + '-sparkline'), pts, t);
-
-            var deltaEl = document.getElementById(t + '-delta');
-            var delta = sp ? (sp.delta || 0) : 0;
-            if (delta > 0) {
-                deltaEl.textContent = '+' + formatTokens(delta);
-                deltaEl.className = 'card-delta active';
-            } else {
-                deltaEl.textContent = '';
-                deltaEl.className = 'card-delta';
-            }
         }
     }
 
