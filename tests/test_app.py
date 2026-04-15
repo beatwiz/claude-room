@@ -30,7 +30,6 @@ CONTRACT_KEYS = [
     "combined_saved",
     "combined_saved_usd",
     "this_week_saved",
-    "last_week_saved",
     "burn_rate_daily",
     "week_is_fresh",
     "rtk_active",
@@ -54,24 +53,6 @@ CONTRACT_KEYS = [
     "headroom_requests_total",
     "headroom_requests_failed",
     "headroom_avg_latency_ms",
-    "jcodemunch_active",
-    "jcodemunch_health",
-    "jcodemunch_version",
-    "jcodemunch_saved",
-    "jcodemunch_delta",
-    "jcodemunch_repos_indexed",
-    "jcodemunch_index_size_mb",
-    "jcodemunch_freshness",
-    "jcodemunch_freshness_label",
-    "jdocmunch_active",
-    "jdocmunch_health",
-    "jdocmunch_version",
-    "jdocmunch_saved",
-    "jdocmunch_delta",
-    "jdocmunch_docs_indexed",
-    "jdocmunch_index_size_mb",
-    "jdocmunch_freshness",
-    "jdocmunch_freshness_label",
     "extra_usage_enabled",
     "extra_usage_monthly_limit",
     "extra_usage_used",
@@ -112,12 +93,11 @@ def test_flatten_snapshot_none_returns_ready_false():
     # Counter fields are zero
     assert flat["combined_saved"] == 0
     assert flat["this_week_saved"] == 0
-    assert flat["last_week_saved"] == 0
     assert flat["burn_rate_daily"] == 0
     assert flat["week_is_fresh"] is False
 
     # Each tool's common fields
-    for tool in ("rtk", "headroom", "jcodemunch", "jdocmunch"):
+    for tool in ("rtk", "headroom"):
         assert flat[f"{tool}_active"] is False
         assert flat[f"{tool}_health"] == "error"
         assert flat[f"{tool}_version"] == "unknown"
@@ -139,20 +119,21 @@ def test_flatten_snapshot_none_returns_ready_false():
     assert flat["headroom_requests_failed"] == 0
     assert flat["headroom_avg_latency_ms"] == 0
 
-    assert flat["jcodemunch_repos_indexed"] == 0
-    assert flat["jcodemunch_index_size_mb"] == 0
-    assert flat["jcodemunch_freshness"] == 0
-    assert flat["jcodemunch_freshness_label"] == "idle"
-    assert flat["jdocmunch_docs_indexed"] == 0
-    assert flat["jdocmunch_index_size_mb"] == 0
-    assert flat["jdocmunch_freshness"] == 0
-    assert flat["jdocmunch_freshness_label"] == "idle"
-
     # extra_usage defaults when not ready
     assert flat["extra_usage_enabled"] is False
     assert flat["extra_usage_monthly_limit"] is None
     assert flat["extra_usage_used"] is None
     assert flat["extra_usage_pct"] is None
+
+
+def test_flatten_snapshot_has_no_jcode_jdoc_keys():
+    """_flatten_snapshot must not produce any jcodemunch or jdocmunch keys."""
+    import app
+
+    flat = app._flatten_snapshot(None)
+
+    jcode_keys = [k for k in flat if "jcodemunch" in k or "jdocmunch" in k]
+    assert jcode_keys == [], f"unexpected keys: {jcode_keys}"
 
 
 # Hand-built "full" snapshot used by several tests below. Every field the
@@ -180,7 +161,6 @@ FULL_SNAP = {
     },
     "weekly": {
         "this_week": 8000,
-        "last_week": 12000,
         "burn_rate_daily": 1200,
         "reset_display": "Thu 17 Apr 15:00",
         "week_is_fresh": False,
@@ -208,31 +188,9 @@ FULL_SNAP = {
         "requests_failed": 0,
         "avg_latency_ms": 7477.5,
     },
-    "jcodemunch": {
-        "active": True,
-        "health": "ok",
-        "version": "2.1.0",
-        "total_saved": 20000,
-        "repos_indexed": 12,
-        "index_size_mb": 48.3,
-        "freshness": 87,
-        "freshness_label": "3m ago",
-    },
-    "jdocmunch": {
-        "active": True,
-        "health": "ok",
-        "version": "1.0.0",
-        "total_saved": 13456,
-        "docs_indexed": 5,
-        "index_size_mb": 4.1,
-        "freshness": 40,
-        "freshness_label": "24m ago",
-    },
     "sparklines": {
         "rtk": {"delta": 42, "points": []},
         "headroom": {"delta": 10, "points": []},
-        "jcodemunch": {"delta": 0, "points": []},
-        "jdocmunch": {"delta": 0, "points": []},
     },
 }
 
@@ -260,10 +218,9 @@ def test_flatten_snapshot_full_payload():
 
     # Combined/weekly savings
     assert flat["combined_saved"] == 123456
-    # rate = 584.41 / 117309038; combined_usd = 584.41 + (50000+20000+13456)*rate
-    assert flat["combined_saved_usd"] == pytest.approx(584.41 + 83456 * (584.41 / 117309038))
+    # rate = 584.41 / 117309038; combined_usd = 584.41 + rtk_saved*rate
+    assert flat["combined_saved_usd"] == pytest.approx(584.41 + 50000 * (584.41 / 117309038))
     assert flat["this_week_saved"] == 8000
-    assert flat["last_week_saved"] == 12000
     assert flat["burn_rate_daily"] == 1200
     assert flat["week_is_fresh"] is False
 
@@ -283,28 +240,6 @@ def test_flatten_snapshot_full_payload():
     assert flat["headroom_saved"] == 40000
     assert flat["headroom_delta"] == 10
     assert flat["headroom_sessions"] == 3
-
-    # jcodemunch
-    assert flat["jcodemunch_active"] is True
-    assert flat["jcodemunch_health"] == "ok"
-    assert flat["jcodemunch_version"] == "2.1.0"
-    assert flat["jcodemunch_saved"] == 20000
-    assert flat["jcodemunch_delta"] == 0
-    assert flat["jcodemunch_repos_indexed"] == 12
-    assert flat["jcodemunch_index_size_mb"] == 48.3
-    assert flat["jcodemunch_freshness"] == 87
-    assert flat["jcodemunch_freshness_label"] == "3m ago"
-
-    # jdocmunch
-    assert flat["jdocmunch_active"] is True
-    assert flat["jdocmunch_health"] == "ok"
-    assert flat["jdocmunch_version"] == "1.0.0"
-    assert flat["jdocmunch_saved"] == 13456
-    assert flat["jdocmunch_delta"] == 0
-    assert flat["jdocmunch_docs_indexed"] == 5
-    assert flat["jdocmunch_index_size_mb"] == 4.1
-    assert flat["jdocmunch_freshness"] == 40
-    assert flat["jdocmunch_freshness_label"] == "24m ago"
 
     # extra_usage
     assert flat["extra_usage_enabled"] is True
@@ -359,8 +294,6 @@ def test_flatten_snapshot_missing_sparklines():
 
     assert flat["rtk_delta"] == 0
     assert flat["headroom_delta"] == 0
-    assert flat["jcodemunch_delta"] == 0
-    assert flat["jdocmunch_delta"] == 0
     # Other rtk fields still work
     assert flat["rtk_saved"] == 50000
 
@@ -374,7 +307,6 @@ def test_flatten_snapshot_missing_weekly():
     flat = app._flatten_snapshot(snap)
 
     assert flat["this_week_saved"] == 0
-    assert flat["last_week_saved"] == 0
     assert flat["burn_rate_daily"] == 0
     assert flat["week_is_fresh"] is False
     assert flat["weekly_reset_display"] is None
@@ -426,7 +358,7 @@ def test_status_route_happy_path(monkeypatch):
     assert body["session_pct"] == 42
     assert body["combined_saved"] == 123456
     assert body["rtk_saved"] == 50000
-    assert body["jcodemunch_freshness_label"] == "3m ago"
+    assert body["headroom_lifetime_saved"] == 117309038
 
 
 def test_status_route_not_ready(monkeypatch):
@@ -502,8 +434,6 @@ def test_flatten_snapshot_no_usd_when_headroom_usd_missing():
             "lifetime_saved_usd": 0,
         },
         "rtk": {"active": True, "total_saved": 50000, "health": "ok", "version": "0.3.1"},
-        "jcodemunch": {"active": False, "health": "error", "version": "unknown", "total_saved": 0},
-        "jdocmunch": {"active": False, "health": "error", "version": "unknown", "total_saved": 0},
         "claude_usage": {"active": False},
         "weekly": {},
         "sparklines": {},
@@ -807,7 +737,7 @@ def test_collect_claude_usage_returns_last_good_on_transient_failure(monkeypatch
     on a big proxy request) must not blank the dashboard — return the
     previously cached payload instead.
 
-    This matches the last-good pattern collect_headroom/rtk/jcodemunch use
+    This matches the last-good pattern collect_headroom/rtk use
     via _last_good in collect_all, so the Claude Usage card stops flickering
     to '--' every time Headroom hiccups.
     """
@@ -1193,8 +1123,6 @@ def test_collect_all_fetches_headroom_stats_once_per_cycle(monkeypatch, tmp_path
 
     monkeypatch.setattr(app, "urlopen", _fake_urlopen)
     monkeypatch.setattr(app, "collect_rtk", lambda: {"active": False})
-    monkeypatch.setattr(app, "collect_jcodemunch", lambda: {"active": False})
-    monkeypatch.setattr(app, "collect_jdocmunch", lambda: {"active": False})
 
     app.collect_all()
 
@@ -1352,8 +1280,6 @@ def test_sparkline_buffer_uses_lifetime_saved_for_headroom(monkeypatch, tmp_path
 
     # Silence everything except headroom.
     monkeypatch.setattr(app, "collect_rtk", lambda: {"active": False})
-    monkeypatch.setattr(app, "collect_jcodemunch", lambda: {"active": False})
-    monkeypatch.setattr(app, "collect_jdocmunch", lambda: {"active": False})
     monkeypatch.setattr(app, "collect_claude_usage",
                         lambda stats_raw=None: {"active": False})
     monkeypatch.setattr(app, "_fetch_headroom_stats_raw", lambda: None)
@@ -1395,44 +1321,34 @@ def test_sparkline_buffer_uses_lifetime_saved_for_headroom(monkeypatch, tmp_path
 
 
 # ---------------------------------------------------------------------------
-# Codex P1: weekly cache must drop baselines computed against a stale
-# combined_saved formula, but preserve v2 baselines (which were written
-# against the same formula v3 uses).
+# Codex P1: weekly cache must drop baselines written under a stale
+# combined_saved formula. v2 and v3 both included jcodemunch/jdocmunch
+# totals; this branch removed them, so pre-v4 baselines overstate the
+# starting point and must be invalidated to force a fresh re-seed.
 # ---------------------------------------------------------------------------
 
 
-def test_weekly_cache_v2_is_migrated_in_place_to_v3(tmp_path, monkeypatch):
-    """v2 baselines were written against the same combined_saved formula that
-    v3 uses, so migrate in place and preserve the user's weekly progress.
-    The cache is stamped with the current formula fingerprint on load so
-    future schema checks can verify it."""
+def test_weekly_cache_pre_v4_baselines_are_dropped(tmp_path, monkeypatch):
+    """v2 and v3 baselines were written when combined_saved still included
+    jcodemunch + jdocmunch, so their baselines are incomparable to the
+    current lifetime_saved + rtk-only formula. Load must return {} so
+    collect_all re-seeds from the current combined_saved value."""
     import app
     import json as _json
 
     cache_dir = tmp_path / "dash"
     cache_dir.mkdir()
     cache_path = cache_dir / "weekly.json"
-    cache_path.write_text(_json.dumps({
-        "current_week_baseline": 14847609,
-        "current_week_start": "2026-04-14T18:30:05+00:00",
-        "weekly_reset_at": "2026-04-21T18:00:00+00:00",
-        "last_week_savings": 0,
-        "schema_version": 2,
-    }))
     monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(cache_dir))
 
-    loaded = app._load_weekly_cache()
-
-    assert loaded["current_week_baseline"] == 14847609  # preserved
-    assert loaded["schema_version"] == app.WEEKLY_CACHE_SCHEMA_VERSION  # stamped forward
-    assert loaded["combined_saved_definition"] == app.COMBINED_SAVED_DEFINITION
-
-    # Migration must persist to disk so subsequent loads hit the fast
-    # v3+ path instead of re-migrating every tick.
-    on_disk = _json.loads(cache_path.read_text())
-    assert on_disk["schema_version"] == app.WEEKLY_CACHE_SCHEMA_VERSION
-    assert on_disk["combined_saved_definition"] == app.COMBINED_SAVED_DEFINITION
-    assert on_disk["current_week_baseline"] == 14847609
+    for stale_version in (2, 3):
+        cache_path.write_text(_json.dumps({
+            "current_week_baseline": 14847609,
+            "current_week_start": "2026-04-14T18:30:05+00:00",
+            "weekly_reset_at": "2026-04-21T18:00:00+00:00",
+            "schema_version": stale_version,
+        }))
+        assert app._load_weekly_cache() == {}
 
 
 def test_weekly_cache_drops_mismatched_definition_fingerprint(tmp_path, monkeypatch):
@@ -1447,7 +1363,7 @@ def test_weekly_cache_drops_mismatched_definition_fingerprint(tmp_path, monkeypa
     cache_path = cache_dir / "weekly.json"
     cache_path.write_text(_json.dumps({
         "current_week_baseline": 42,
-        "schema_version": 3,
+        "schema_version": app.WEEKLY_CACHE_SCHEMA_VERSION,
         "combined_saved_definition": "old-formula-that-no-longer-exists",
     }))
     monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(cache_dir))

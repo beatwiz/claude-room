@@ -4,6 +4,17 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+- Dropped jcodemunch-mcp and jdocmunch-mcp integration end-to-end: collectors, flat-contract keys, env vars, dashboard cards, and global config permissions. The `JCODEMUNCH_*` / `JDOCMUNCH_*` env vars and the `jcodemunch_*` / `jdocmunch_*` flat JSON fields are gone. `/api/status` consumers that still read those keys must be updated.
+- Dropped the `last_week_saved` field from `/api/status` and the `last_week` key from the collector's weekly snapshot. The Combined card no longer surfaces last-week savings and the collector no longer computes the last-week total at reset rotation. The weekly baseline cache is still needed — it drives `this_week_saved` and `burn_rate_daily`.
+
+### Changed
+- Merged the Claude Usage and Extra Usage cards into a single **Usage** card with a `[Claude | Extra]` toggle. Default mode auto-follows `extra_usage_enabled`; a user click sticks for the session.
+- Dashboard collapses to a single row of four cards: Combined, RTK, Headroom, Usage.
+- Combined card renames `avg/day` to `daily average`.
+
 ## [1.2.0] - 2026-04-09
 
 Activity feed realtime rewrite. The LIVE ACTIVITY feed now updates within

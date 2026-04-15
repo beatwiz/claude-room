@@ -1,4 +1,4 @@
-"""Claude Tools Dashboard -- Flask backend with SSE streaming."""
+"""Claude Room Dashboard -- Flask backend with SSE streaming."""
 
 import json
 import os
@@ -26,10 +26,6 @@ HOME = os.path.expanduser("~")
 HEADROOM_URL = os.environ.get("HEADROOM_URL", "http://127.0.0.1:8787")
 RTK_DB_PATH = os.environ.get("RTK_DB_PATH", os.path.join(HOME, ".local", "share", "rtk", "history.db"))
 RTK_BIN = os.environ.get("RTK_BIN", "rtk")
-JCODEMUNCH_INDEX_DIR = os.environ.get("JCODEMUNCH_INDEX_DIR", os.path.join(HOME, ".code-index"))
-JCODEMUNCH_BIN = os.environ.get("JCODEMUNCH_BIN", "jcodemunch-mcp")
-JDOCMUNCH_INDEX_DIR = os.environ.get("JDOCMUNCH_INDEX_DIR", os.path.join(HOME, ".doc-index"))
-JDOCMUNCH_BIN = os.environ.get("JDOCMUNCH_BIN", "jdocmunch-mcp")
 PORT = int(os.environ.get("PORT", "8095"))
 SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "2"))
 COLLECTOR_INTERVAL = float(os.environ.get("COLLECTOR_INTERVAL", "0.25"))
@@ -57,22 +53,12 @@ _claude_usage_last_good = None
 _sparkline_buffers = {
     "rtk": deque(maxlen=240),
     "headroom": deque(maxlen=240),
-    "jcodemunch": deque(maxlen=240),
-    "jdocmunch": deque(maxlen=240),
 }
 _headroom_last_total = 0
 _headroom_history = []
-_jcodemunch_last_total = 0
-_jcodemunch_last_mtime = 0
-_jcodemunch_history = []
-_jdocmunch_last_total = 0
-_jdocmunch_last_mtime = 0
-_jdocmunch_history = []
 _last_collect_success = {
     "rtk": 0.0,
     "headroom": 0.0,
-    "jcodemunch": 0.0,
-    "jdocmunch": 0.0,
 }
 
 # Cached version strings. resolve_versions_once() populates this at module
@@ -80,44 +66,14 @@ _last_collect_success = {
 # on the hot path.
 _cached_versions = {
     "rtk": None,
-    "jcodemunch": None,
-    "jdocmunch": None,
 }
-
-
-def _read_jcodemunch_config_version():
-    config_path = os.path.join(JCODEMUNCH_INDEX_DIR, "config.jsonc")
-    try:
-        with open(config_path) as f:
-            m = re.search(r'"version"\s*:\s*"([^"]+)"', f.read())
-            return m.group(1) if m else None
-    except OSError:
-        return None
 
 
 def resolve_versions_once():
     """Resolve tool versions once. Called by DashboardCollector.run() at thread startup.
-    Per-tool precedence: TOOL_VERSION env var > binary --version > tool-specific fallback > "unknown"."""
+    Per-tool precedence: TOOL_VERSION env var > binary --version > "unknown"."""
     rtk_v = os.environ.get("RTK_VERSION") or _run([RTK_BIN, "--version"])
     _cached_versions["rtk"] = rtk_v if rtk_v else "unknown"
-
-    jc_v = (
-        os.environ.get("JCODEMUNCH_VERSION")
-        or _run([JCODEMUNCH_BIN, "--version"])
-        or _read_jcodemunch_config_version()
-    )
-    _cached_versions["jcodemunch"] = jc_v if jc_v else "unknown"
-
-    jd_v = os.environ.get("JDOCMUNCH_VERSION") or _run([JDOCMUNCH_BIN, "--version"])
-    if not jd_v:
-        raw = _run(["pipx", "list", "--short"])
-        if raw:
-            for line in raw.splitlines():
-                if "jdocmunch" in line:
-                    parts = line.strip().split()
-                    jd_v = parts[1] if len(parts) > 1 else None
-                    break
-    _cached_versions["jdocmunch"] = jd_v if jd_v else "unknown"
 
 
 def _run(cmd, timeout=2):
@@ -331,10 +287,17 @@ def collect_headroom(stats_raw=None):
             recent_requests = raw.get("recent_requests") or []
 
             total_saved = tokens_section.get("saved") or 0
+            lifetime_saved = persist.get("tokens_saved") or 0
             avg_pct = round(tokens_section.get("savings_percent") or 0, 1)
 
-            if _headroom_last_total > 0 and total_saved > _headroom_last_total:
-                delta = total_saved - _headroom_last_total
+            # Track delta against `lifetime_saved` — the same counter the
+            # Headroom card's headline displays. `total_saved` resets when
+            # Headroom restarts, which would otherwise produce giant negative
+            # jumps (or, with the gate below, a silent drop where lifetime
+            # keeps rising but no activity entries appear for a while).
+            delta_source = lifetime_saved if lifetime_saved > 0 else total_saved
+            if _headroom_last_total > 0 and delta_source > _headroom_last_total:
+                delta = delta_source - _headroom_last_total
                 if avg_pct and avg_pct > 0:
                     input_est = int(round(delta / (avg_pct / 100)))
                     output_est = max(0, input_est - delta)
@@ -349,7 +312,7 @@ def collect_headroom(stats_raw=None):
                     "saved_pct": avg_pct,
                 })
                 _headroom_history = _headroom_history[-100:]
-            _headroom_last_total = total_saved
+            _headroom_last_total = delta_source
 
             # Prefer our own _headroom_history (built from delta-on-total_saved
             # every tick, so it captures every compression event). Fall back to
@@ -387,173 +350,31 @@ def collect_headroom(stats_raw=None):
         return None
 
 
-def collect_jcodemunch():
-    """Read jcodemunch savings and index stats."""
+def _rehealth_claude_usage_fallback():
+    """Return `_claude_usage_last_good` with health re-derived from `polled_at`.
+
+    The cached payload captured health at write time. When /stats fetches
+    later fail, returning that payload verbatim keeps a card green forever
+    even though the underlying data is ancient. Re-evaluate age against
+    CLAUDE_USAGE_STALE_AFTER_SECONDS before serving the fallback so an
+    extended Headroom outage surfaces as `stale`.
+    """
+    if _claude_usage_last_good is None:
+        return {"active": False}
+    cached = dict(_claude_usage_last_good)
+    polled_at = cached.get("polled_at")
+    if not polled_at:
+        cached["health"] = "stale"
+        return cached
     try:
-        index_dir = JCODEMUNCH_INDEX_DIR
-        if not os.path.isdir(index_dir):
-            return None
-
-        savings_path = os.path.join(index_dir, "_savings.json")
-        total_tokens_saved = 0
-        if os.path.exists(savings_path):
-            with open(savings_path) as f:
-                data = json.load(f)
-            total_tokens_saved = data.get("total_tokens_saved", 0)
-
-        # Count .db files and sum sizes
-        index_dir = JCODEMUNCH_INDEX_DIR
-        db_files = glob.glob(os.path.join(index_dir, "*.db"))
-        repos_indexed = len(db_files)
-        index_size_bytes = sum(os.path.getsize(f) for f in db_files if os.path.exists(f))
-        index_size_mb = round(index_size_bytes / (1024 * 1024), 1)
-
-        version = _cached_versions.get("jcodemunch") or "unknown"
-
-        # Detect activity via the newest mtime across session_stats.json, _savings.json,
-        # and all per-repo .db files. jcodemunch-mcp flushes these at different times
-        # (neither file updates on every MCP call), so watching the max catches more events.
-        global _jcodemunch_last_total, _jcodemunch_last_mtime, _jcodemunch_history
-        stats_path = os.path.join(index_dir, "session_stats.json")
-        watched_paths = [stats_path, savings_path, *db_files]
-        newest_mtime = max(
-            (os.path.getmtime(p) for p in watched_paths if os.path.exists(p)),
-            default=0,
-        )
-        if newest_mtime > _jcodemunch_last_mtime and _jcodemunch_last_mtime > 0:
-            if total_tokens_saved > _jcodemunch_last_total and _jcodemunch_last_total > 0:
-                delta = total_tokens_saved - _jcodemunch_last_total
-                _jcodemunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jcodemunch",
-                    "cmd": f"indexed/queried across {repos_indexed} repos",
-                    "saved_tokens": delta,
-                    "saved_pct": 0,
-                })
-            else:
-                _jcodemunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jcodemunch",
-                    "cmd": f"query across {repos_indexed} repos ({index_size_mb}MB indexed)",
-                    "saved_tokens": 0,
-                    "saved_pct": 0,
-                })
-            _jcodemunch_history = _jcodemunch_history[-100:]
-        _jcodemunch_last_mtime = newest_mtime
-        _jcodemunch_last_total = total_tokens_saved
-
-        # Freshness: 100% if active in last 5 min, decays to 0% over 60 min
-        if newest_mtime > 0:
-            elapsed_min = (time.time() - newest_mtime) / 60
-            freshness = max(0, round(100 - (elapsed_min / 60 * 100)))
-        else:
-            freshness = 0
-
-        if freshness > 0:
-            if elapsed_min < 1:
-                freshness_label = "just now"
-            elif elapsed_min < 60:
-                freshness_label = f"{int(elapsed_min)}m ago"
-            else:
-                freshness_label = f"{int(elapsed_min / 60)}h ago"
-        else:
-            freshness_label = "idle"
-
-        return {
-            "active": repos_indexed > 0 or total_tokens_saved > 0,
-            "total_saved": total_tokens_saved,
-            "repos_indexed": repos_indexed,
-            "index_size_mb": index_size_mb,
-            "version": version or "unknown",
-            "history": list(_jcodemunch_history),
-            "freshness": freshness,
-            "freshness_label": freshness_label,
-        }
-    except Exception:
-        return None
-
-
-def collect_jdocmunch():
-    global _jdocmunch_last_total, _jdocmunch_last_mtime, _jdocmunch_history
-    try:
-        index_dir = JDOCMUNCH_INDEX_DIR
-        if not os.path.isdir(index_dir):
-            return None
-
-        savings_path = os.path.join(index_dir, "_savings.json")
-        total_tokens_saved = 0
-        if os.path.exists(savings_path):
-            with open(savings_path) as f:
-                data = json.load(f)
-            total_tokens_saved = data.get("total_tokens_saved", 0)
-
-        index_files = [f for f in glob.glob(os.path.join(index_dir, "local", "*.json"))]
-        docs_indexed = len(index_files)
-        index_size_mb = round(sum(os.path.getsize(f) for f in index_files) / (1024 * 1024), 1)
-
-        # Version (cached at startup)
-        version = _cached_versions.get("jdocmunch") or "unknown"
-
-        # _savings.json updates on every get_section call (token savings).
-        # Index JSON files update on re-index. Check both for activity.
-        savings_mtime = os.path.getmtime(savings_path) if os.path.exists(savings_path) else 0
-        idx_mtime = max(
-            (os.path.getmtime(f) for f in index_files),
-            default=0,
-        )
-        newest_mtime = max(savings_mtime, idx_mtime)
-
-        if newest_mtime > _jdocmunch_last_mtime and _jdocmunch_last_mtime > 0:
-            delta = total_tokens_saved - _jdocmunch_last_total
-            if delta > 0:
-                _jdocmunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jdocmunch",
-                    "cmd": f"indexed/queried across {docs_indexed} docs",
-                    "saved_tokens": delta,
-                    "saved_pct": 0,
-                })
-            else:
-                _jdocmunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jdocmunch",
-                    "cmd": f"query across {docs_indexed} docs ({index_size_mb}MB indexed)",
-                    "saved_tokens": 0,
-                    "saved_pct": 0,
-                })
-            _jdocmunch_history = _jdocmunch_history[-100:]
-        _jdocmunch_last_mtime = newest_mtime
-        _jdocmunch_last_total = total_tokens_saved
-
-        # Freshness: 100% if active in last 5 min, decays to 0% over 60 min
-        if newest_mtime > 0:
-            elapsed_min = (time.time() - newest_mtime) / 60
-            freshness = max(0, round(100 - (elapsed_min / 60 * 100)))
-        else:
-            freshness = 0
-
-        if freshness > 0:
-            if elapsed_min < 1:
-                freshness_label = "just now"
-            elif elapsed_min < 60:
-                freshness_label = f"{int(elapsed_min)}m ago"
-            else:
-                freshness_label = f"{int(elapsed_min / 60)}h ago"
-        else:
-            freshness_label = "idle"
-
-        return {
-            "active": docs_indexed > 0 or total_tokens_saved > 0,
-            "total_saved": total_tokens_saved,
-            "docs_indexed": docs_indexed,
-            "index_size_mb": index_size_mb,
-            "version": version,
-            "history": list(_jdocmunch_history),
-            "freshness": freshness,
-            "freshness_label": freshness_label,
-        }
-    except Exception:
-        return None
+        polled_dt = datetime.fromisoformat(polled_at.replace("Z", "+00:00"))
+        if polled_dt.tzinfo is None:
+            polled_dt = polled_dt.replace(tzinfo=timezone.utc)
+        age = (_utc_now() - polled_dt).total_seconds()
+        cached["health"] = "ok" if age <= CLAUDE_USAGE_STALE_AFTER_SECONDS else "stale"
+    except (ValueError, TypeError):
+        cached["health"] = "stale"
+    return cached
 
 
 def collect_claude_usage(stats_raw=None):
@@ -589,11 +410,11 @@ def collect_claude_usage(stats_raw=None):
 
     raw = stats_raw if stats_raw is not None else _fetch_headroom_stats_raw()
     if raw is None:
-        return _claude_usage_last_good or {"active": False}
+        return _rehealth_claude_usage_fallback()
 
     latest = (raw.get("subscription_window") or {}).get("latest") or {}
     if not latest:
-        return _claude_usage_last_good or {"active": False}
+        return _rehealth_claude_usage_fallback()
 
     five = latest.get("five_hour") or {}
     seven = latest.get("seven_day") or {}
@@ -635,7 +456,7 @@ def collect_claude_usage(stats_raw=None):
     return result
 
 
-WEEKLY_CACHE_SCHEMA_VERSION = 3
+WEEKLY_CACHE_SCHEMA_VERSION = 4
 
 # Fingerprint of the combined_saved formula used when a baseline is written.
 # Stored inside weekly.json so _load_weekly_cache can detect any future change
@@ -643,23 +464,20 @@ WEEKLY_CACHE_SCHEMA_VERSION = 3
 # totals. Whenever collect_all's combined_saved computation changes, update
 # this string — existing caches will auto-rebase on next load.
 COMBINED_SAVED_DEFINITION = (
-    "headroom:lifetime_saved||total_saved;rtk:total_saved;"
-    "jcodemunch:total_saved;jdocmunch:total_saved"
+    "headroom:lifetime_saved||total_saved;rtk:total_saved"
 )
 
 
 def _load_weekly_cache():
     """Load weekly savings snapshot from disk.
 
-    Pre-v2: dropped (baseline was written against the old total_saved-based
-    combined_saved definition, incomparable to the current lifetime_saved
-    formula).
+    Pre-v4: dropped. v2 and v3 baselines were written when combined_saved
+    still included jcodemunch + jdocmunch totals; this branch removed both
+    tools from the formula, so their baselines now overstate the starting
+    point and would produce negative / understated this_week_saved until
+    the next reset window.
 
-    v2: the formula matches v3, so migrate in place — preserve the baseline,
-    stamp the schema version and definition fingerprint forward so the user
-    does not lose their weekly progress on upgrade.
-
-    v3+: require an exact combined_saved_definition match. A mismatch means
+    v4+: require an exact combined_saved_definition match. A mismatch means
     the formula changed without a schema bump (or the definition constant
     was edited); drop the cache so collect_all re-seeds a fresh baseline.
     """
@@ -671,15 +489,8 @@ def _load_weekly_cache():
         return {}
 
     ver = data.get("schema_version", 1)
-    if ver < 2:
+    if ver < WEEKLY_CACHE_SCHEMA_VERSION:
         return {}
-    if ver == 2:
-        # Persist the migration so subsequent loads hit the fast path
-        # (v3+ exact-match branch) instead of re-migrating every tick.
-        data["schema_version"] = WEEKLY_CACHE_SCHEMA_VERSION
-        data["combined_saved_definition"] = COMBINED_SAVED_DEFINITION
-        _save_weekly_cache(data)
-        return data
     if data.get("combined_saved_definition") != COMBINED_SAVED_DEFINITION:
         return {}
     return data
@@ -855,13 +666,9 @@ def _flatten_snapshot(snap):
 
     rtk = snap.get("rtk") or {}
     headroom = snap.get("headroom") or {}
-    jcm = snap.get("jcodemunch") or {}
-    jdm = snap.get("jdocmunch") or {}
 
     spark_rtk = sparklines.get("rtk") or {}
     spark_hr = sparklines.get("headroom") or {}
-    spark_jcm = sparklines.get("jcodemunch") or {}
-    spark_jdm = sparklines.get("jdocmunch") or {}
 
     claude_active = bool(claude.get("active"))
     # claude_usage_health lets statusline consumers distinguish "no data ever
@@ -893,11 +700,7 @@ def _flatten_snapshot(snap):
     )
     combined_saved_usd = None
     if usd_per_token is not None:
-        non_headroom_tokens = (
-            (rtk.get("total_saved") or 0)
-            + (jcm.get("total_saved") or 0)
-            + (jdm.get("total_saved") or 0)
-        )
+        non_headroom_tokens = rtk.get("total_saved") or 0
         combined_saved_usd = hr_lifetime_usd + non_headroom_tokens * usd_per_token
 
     return {
@@ -924,7 +727,6 @@ def _flatten_snapshot(snap):
         "combined_saved": snap.get("combined_saved", 0),
         "combined_saved_usd": combined_saved_usd,
         "this_week_saved": weekly.get("this_week", 0),
-        "last_week_saved": weekly.get("last_week", 0),
         "burn_rate_daily": weekly.get("burn_rate_daily", 0),
         "week_is_fresh": weekly.get("week_is_fresh", False),
 
@@ -951,26 +753,6 @@ def _flatten_snapshot(snap):
         "headroom_requests_failed": headroom.get("requests_failed", 0),
         "headroom_avg_latency_ms": headroom.get("avg_latency_ms", 0),
 
-        "jcodemunch_active": jcm.get("active", False),
-        "jcodemunch_health": jcm.get("health", "error"),
-        "jcodemunch_version": jcm.get("version", "unknown"),
-        "jcodemunch_saved": jcm.get("total_saved", 0),
-        "jcodemunch_delta": spark_jcm.get("delta", 0),
-        "jcodemunch_repos_indexed": jcm.get("repos_indexed", 0),
-        "jcodemunch_index_size_mb": jcm.get("index_size_mb", 0),
-        "jcodemunch_freshness": jcm.get("freshness", 0),
-        "jcodemunch_freshness_label": jcm.get("freshness_label", "idle"),
-
-        "jdocmunch_active": jdm.get("active", False),
-        "jdocmunch_health": jdm.get("health", "error"),
-        "jdocmunch_version": jdm.get("version", "unknown"),
-        "jdocmunch_saved": jdm.get("total_saved", 0),
-        "jdocmunch_delta": spark_jdm.get("delta", 0),
-        "jdocmunch_docs_indexed": jdm.get("docs_indexed", 0),
-        "jdocmunch_index_size_mb": jdm.get("index_size_mb", 0),
-        "jdocmunch_freshness": jdm.get("freshness", 0),
-        "jdocmunch_freshness_label": jdm.get("freshness_label", "idle"),
-
         "extra_usage_enabled": bool(_claude("extra_usage_enabled")),
         "extra_usage_monthly_limit": _claude("extra_usage_monthly_limit"),
         "extra_usage_used": _claude("extra_usage_used"),
@@ -996,8 +778,6 @@ def collect_all():
     collectors = {
         "rtk": collect_rtk,
         "headroom": lambda: collect_headroom(stats_raw=headroom_stats_raw),
-        "jcodemunch": collect_jcodemunch,
-        "jdocmunch": collect_jdocmunch,
     }
 
     results = {}
@@ -1040,11 +820,8 @@ def collect_all():
         fresh_reset = claude_usage["weekly_reset"]
         stored_reset = weekly_data.get("weekly_reset_at", "")
 
-        # Reset has moved forward -- rotate weeks
+        # Reset has moved forward -- rotate baseline to the new window
         if not _same_reset_window(fresh_reset, stored_reset) and stored_reset:
-            baseline = weekly_data.get("current_week_baseline", 0)
-            weekly_data["last_week_savings"] = combined_saved - baseline
-            weekly_data["last_week_end"] = stored_reset
             weekly_data["current_week_baseline"] = combined_saved
             weekly_data["current_week_start"] = stored_reset
             weekly_data["weekly_reset_at"] = fresh_reset
@@ -1054,11 +831,9 @@ def collect_all():
             weekly_data["current_week_baseline"] = combined_saved
             weekly_data["current_week_start"] = datetime.now(timezone.utc).isoformat()
             weekly_data["weekly_reset_at"] = fresh_reset
-            weekly_data["last_week_savings"] = 0
             _save_weekly_cache(weekly_data)
 
     this_week_savings = combined_saved - weekly_data.get("current_week_baseline", combined_saved)
-    last_week_savings = weekly_data.get("last_week_savings", 0)
 
     # Burn rate: savings per day this week
     week_start = weekly_data.get("current_week_start")
@@ -1134,10 +909,6 @@ def collect_all():
         history.extend(results["rtk"]["history"])
     if "history" in results.get("headroom", {}):
         history.extend(results["headroom"]["history"])
-    if "history" in results.get("jcodemunch", {}):
-        history.extend(results["jcodemunch"]["history"])
-    if "history" in results.get("jdocmunch", {}):
-        history.extend(results["jdocmunch"]["history"])
 
     # Sort by time descending, collapse bursts, limit to 50
     history.sort(key=lambda x: x.get("time", ""), reverse=True)
@@ -1149,7 +920,7 @@ def collect_all():
     # rather than popping in-place — the same tool dict is stored in
     # _last_good by reference, and mutating it would strip history from the
     # fallback cache and empty the feed on the next transient failure.
-    for tool_name in ("rtk", "headroom", "jcodemunch", "jdocmunch"):
+    for tool_name in ("rtk", "headroom"):
         trimmed = dict(results[tool_name])
         trimmed.pop("history", None)
         results[tool_name] = trimmed
@@ -1162,14 +933,11 @@ def collect_all():
         "combined_saved": combined_saved,
         "rtk": results["rtk"],
         "headroom": results["headroom"],
-        "jcodemunch": results["jcodemunch"],
-        "jdocmunch": results["jdocmunch"],
         "sparklines": sparklines,
         "history": history,
         "claude_usage": claude_usage or {"active": False},
         "weekly": {
             "this_week": this_week_savings,
-            "last_week": last_week_savings,
             "burn_rate_daily": burn_rate_daily,
             "reset_display": reset_display,
             "week_is_fresh": week_is_fresh,
@@ -1224,7 +992,7 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Tools Dashboard</title>
+<title>Claude Room Dashboard</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1258,13 +1026,6 @@ body {
 }
 .header-left:hover .header-title {
     text-shadow: 0 0 6px #00ff88;
-}
-.pulse-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #00ff88;
-    animation: pulse 2s infinite;
 }
 @keyframes pulse {
     0%, 100% { opacity: 1; box-shadow: 0 0 4px #00ff88; }
@@ -1301,7 +1062,6 @@ body {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 12px;
-    position: relative;
 }
 .card-name {
     font-size: 12px;
@@ -1347,18 +1107,61 @@ body {
 .card-stats .val { color: #aaa; }
 .sparkline-container { margin-bottom: 6px; }
 .sparkline-container svg { width: 100%; height: 35px; }
-.card-delta {
-    font-size: 12px;
-    color: #555;
+
+/* Combined + Usage card specifics */
+.cards .card-combined .card-value { color: #00ff88; }
+.cards .card-combined .card-stats { gap: 12px; }
+.cards .card-combined .card-stats > span { white-space: nowrap; }
+
+.cards .card-usage .usage-toggle {
+    display: flex;
+    gap: 0;
+    background: #0a0a0a;
+    border: 1px solid #1a1a2e;
+    border-radius: 3px;
+    padding: 2px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
 }
-.card-delta.active {
-    color: #00ff88;
-    animation: flash 0.5s;
+.cards .card-usage .usage-toggle button {
+    background: transparent;
+    border: none;
+    color: #666;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    border-radius: 2px;
 }
-@keyframes flash {
-    0% { opacity: 0.3; }
-    100% { opacity: 1; }
+.cards .card-usage .usage-toggle button.active {
+    background: #1a1a2e;
+    color: #fff;
 }
+.cards .card-usage .usage-toggle button:disabled {
+    color: #333;
+    cursor: not-allowed;
+}
+.cards .card-usage .usage-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 4px 0;
+    font-size: 13px;
+    color: #aaa;
+}
+.cards .card-usage .usage-row .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.cards .card-usage .usage-row .val { color: #fff; font-weight: 600; font-size: 12px; }
+.cards .card-usage .usage-row .val.pct-green { color: #00ff88; }
+.cards .card-usage .usage-row .val.pct-yellow { color: #ffcc00; }
+.cards .card-usage .usage-row .val.pct-red { color: #ff4444; }
+.cards .card-usage .progress-track { margin-top: 12px; }
+.cards .card-usage .progress-fill.pct-green { background: #00ff88; }
+.cards .card-usage .progress-fill.pct-yellow { background: #ffcc00; }
+.cards .card-usage .progress-fill.pct-red { background: #ff4444; }
+.cards .card-usage .val-time { color: #bbb; font-weight: 600; }
 
 /* Tool accent colours — purely for card identity, no semantic meaning */
 .clr-rtk { color: #3b82f6; }
@@ -1371,23 +1174,17 @@ body {
 .stroke-headroom { stroke: #8b5cf6; }
 .area-headroom { fill: rgba(139, 92, 246, 0.1); }
 
-.clr-jcodemunch { color: #ec4899; }
-.fill-jcodemunch { background: #ec4899; }
-.stroke-jcodemunch { stroke: #ec4899; }
-.area-jcodemunch { fill: rgba(236, 72, 153, 0.1); }
-
-.clr-jdocmunch { color: #14b8a6; }
-.fill-jdocmunch { background: #14b8a6; }
-.stroke-jdocmunch { stroke: #14b8a6; }
-.area-jdocmunch { fill: rgba(20, 184, 166, 0.1); }
+.card-name-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 .health-dot {
-    width: 5px;
-    height: 5px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    position: absolute;
-    left: -14px;
-    top: 50%;
-    transform: translateY(-50%);
+    display: inline-block;
+    flex: 0 0 auto;
 }
 .health-ok {
     background: #00ff88;
@@ -1501,248 +1298,95 @@ body {
 @media (max-width: 550px) {
     .cards { grid-template-columns: 1fr; }
 }
-/* Summary cards */
-.summary-cards {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-    margin-bottom: 12px;
-}
-.summary-cards .card.card-combined {
-    grid-column: span 2;
-}
-.summary-cards .card-value {
-    color: #fff;
-    margin-bottom: 0;
-}
-.summary-cards .card-value.dim {
-    color: #666;
-}
-.summary-cards .card-combined .card-value {
-    color: #00ff88;
-}
-.summary-cards .card-claude .card-version {
-    color: #bbb;
-}
-.summary-cards .card-sub {
-    color: #aaa;
-    font-size: 13px;
-    margin-top: 4px;
-    margin-bottom: 0;
-}
-.summary-cards .card-extra .progress-track {
-    margin-top: 12px;
-}
-.summary-cards .combined-body {
-    display: flex;
-    align-items: center;
-    gap: 48px;
-}
-.summary-cards .combined-left {
-    flex: 1 1 0;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-}
-.summary-cards .val-time {
-    color: #bbb;
-    font-weight: 600;
-}
-.summary-cards .card-sub-usd {
-    color: #5cc48a;
-    font-size: 12px;
-    margin-top: 2px;
-}
-.summary-cards .combined-stats {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    flex: 1 1 0;
-    min-width: 0;
-}
-.summary-cards .combined-stats .stat-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    align-items: baseline;
-}
-.summary-cards .combined-stats .label {
-    color: #888;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-size: 10px;
-}
-.summary-cards .combined-stats .val {
-    color: #fff;
-    font-weight: 600;
-    font-size: 14px;
-}
-.summary-cards .val-live { color: #00ff88; }
-.summary-cards .val-rate { color: #5cc48a; }
-.summary-cards .val-cold { color: #666; }
-.summary-cards .usage-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding: 4px 0;
-    font-size: 13px;
-    color: #aaa;
-}
-.summary-cards .usage-row .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
-.summary-cards .usage-row .val { color: #fff; font-weight: 600; }
-.summary-cards .usage-row .val.pct-green { color: #00ff88; }
-.summary-cards .usage-row .val.pct-yellow { color: #ffcc00; }
-.summary-cards .usage-row .val.pct-red { color: #ff4444; }
-.summary-cards .card-extra .progress-fill.pct-green { background: #00ff88; }
-.summary-cards .card-extra .progress-fill.pct-yellow { background: #ffcc00; }
-.summary-cards .card-extra .progress-fill.pct-red { background: #ff4444; }
-@media (max-width: 1000px) {
-    .summary-cards { grid-template-columns: repeat(2, 1fr); }
-    .summary-cards .card.card-combined { grid-column: span 2; }
-}
-@media (max-width: 600px) {
-    .header { flex-wrap: wrap; justify-content: center; gap: 4px; }
-    .header-left { width: 100%; justify-content: center; }
-    .header-right { font-size: 12px; }
-    html, body { overflow: auto; height: auto; }
-    .summary-cards { grid-template-columns: 1fr; }
-    .summary-cards .card.card-combined { grid-column: auto; }
-    .summary-cards .card-header {
-        flex-wrap: wrap;
-        gap: 4px 8px;
-    }
-    .summary-cards .combined-body {
-        flex-direction: column;
-        align-items: stretch;
-        gap: 16px;
-    }
-    .summary-cards .combined-body .card-value {
-        flex: none;
-    }
-    .summary-cards .combined-stats {
-        flex: none;
-    }
-}
 </style>
 </head>
 <body>
 <!-- Header -->
 <div class="header">
     <a class="header-left" href="https://github.com/Will-Luck/claude-tools-dashboard" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
-        <div class="pulse-dot"></div>
-        <div class="header-title">CLAUDE TOOLS</div>
+        <div class="header-title">CLAUDE ROOM</div>
     </a>
-    <div class="header-right" id="clock">--:--:-- &blacksquare; -- --- ----</div>
-</div>
-
-<!-- Summary Cards -->
-<div class="summary-cards">
-    <div class="card card-combined" id="summary-combined">
-        <div class="card-header">
-            <span class="health-dot health-ok" id="summary-combined-health"></span>
-            <span class="card-name">Combined</span>
-        </div>
-        <div class="combined-body">
-            <div class="combined-left">
-                <div class="card-value" id="summary-combined-value">--</div>
-                <div class="card-sub">tokens saved</div>
-                <div class="card-sub card-sub-usd" id="summary-combined-usd">--</div>
-            </div>
-            <div class="combined-stats">
-                <div class="stat-row"><span class="label">This Week</span><span class="val val-live" id="summary-this-week">--</span></div>
-                <div class="stat-row"><span class="label">Last Week</span><span class="val val-cold" id="summary-last-week">--</span></div>
-                <div class="stat-row"><span class="label">Avg/Day</span><span class="val val-rate" id="summary-burn">--</span></div>
-            </div>
-        </div>
-    </div>
-    <div class="card card-claude" id="summary-claude">
-        <div class="card-header">
-            <span class="health-dot health-error" id="summary-claude-health"></span>
-            <span class="card-name">Claude Usage</span>
-        </div>
-        <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
-        <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
-        <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
-        <div class="usage-row"><span class="label">Reset</span><span class="val val-time" id="summary-claude-reset">--</span></div>
-    </div>
-    <div class="card card-extra inactive" id="summary-extra">
-        <div class="card-header">
-            <span class="health-dot health-error" id="summary-extra-health"></span>
-            <span class="card-name">Extra Usage</span>
-            <span class="card-version">overage</span>
-        </div>
-        <div class="card-value dim" id="summary-extra-value">n/a</div>
-        <div class="card-sub" id="summary-extra-detail">not enabled</div>
-        <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%"></div></div>
-    </div>
+    <div class="header-right">DASHBOARD</div>
 </div>
 
 <!-- Cards -->
 <div class="cards">
+    <!-- Combined -->
+    <div class="card card-combined" id="summary-combined">
+        <div class="card-header">
+            <span class="card-name-group">
+                <span class="card-name">Combined</span>
+                <span class="health-dot health-ok" id="summary-combined-health"></span>
+            </span>
+        </div>
+        <div class="card-value" id="summary-combined-value">--</div>
+        <div class="card-sub" id="summary-combined-sub">tokens saved</div>
+        <div class="card-stats" id="summary-combined-stats">
+            <span><span class="label">this week</span> <span class="val" id="summary-this-week">--</span></span>
+            <span><span class="label">daily average</span> <span class="val" id="summary-burn">--</span></span>
+        </div>
+    </div>
+
     <!-- RTK -->
     <div class="card" id="rtk-card">
         <div class="card-header">
-            <span class="health-dot health-error" id="rtk-health"></span><a href="https://github.com/rtk-ai/rtk" target="_blank" class="card-name">RTK</a>
+            <span class="card-name-group">
+                <a href="https://github.com/rtk-ai/rtk" target="_blank" class="card-name">RTK</a>
+                <span class="health-dot health-error" id="rtk-health"></span>
+            </span>
             <span class="card-version" id="rtk-version">--</span>
         </div>
         <div class="card-value clr-rtk" id="rtk-value">--</div>
         <div class="card-sub" id="rtk-sub">tokens saved</div>
-        <div class="progress-track"><div class="progress-fill fill-rtk" id="rtk-bar" style="width:0%"></div></div>
         <div class="card-stats" id="rtk-stats">
             <span><span class="label">efficiency</span> <span class="val">--%</span></span>
         </div>
+        <div class="progress-track"><div class="progress-fill fill-rtk" id="rtk-bar" style="width:0%"></div></div>
         <div class="sparkline-container"><svg id="rtk-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="rtk-delta"></div>
     </div>
 
     <!-- Headroom -->
     <div class="card" id="headroom-card">
         <div class="card-header">
-            <span class="health-dot health-error" id="headroom-health"></span><a href="https://github.com/chopratejas/headroom" target="_blank" class="card-name">Headroom</a>
+            <span class="card-name-group">
+                <a href="https://github.com/chopratejas/headroom" target="_blank" class="card-name">Headroom</a>
+                <span class="health-dot health-error" id="headroom-health"></span>
+            </span>
             <span class="card-version" id="headroom-version">--</span>
         </div>
         <div class="card-value clr-headroom" id="headroom-value">--</div>
         <div class="card-sub" id="headroom-sub">awaiting first session</div>
-        <div class="progress-track"><div class="progress-fill fill-headroom" id="headroom-bar" style="width:0%"></div></div>
         <div class="card-stats" id="headroom-stats">
             <span><span class="label">proxy not active</span></span>
         </div>
+        <div class="progress-track"><div class="progress-fill fill-headroom" id="headroom-bar" style="width:0%"></div></div>
         <div class="sparkline-container"><svg id="headroom-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="headroom-delta"></div>
     </div>
 
-    <!-- jCodeMunch -->
-    <div class="card" id="jcodemunch-card">
+    <!-- Usage (merged Claude / Extra with toggle) -->
+    <div class="card card-usage" id="summary-usage">
         <div class="card-header">
-            <span class="health-dot health-error" id="jcodemunch-health"></span><a href="https://github.com/jgravelle/jcodemunch-mcp" target="_blank" class="card-name">jCodeMunch</a>
-            <span class="card-version" id="jcodemunch-version">--</span>
+            <span class="card-name-group">
+                <span class="card-name">Usage</span>
+                <span class="health-dot health-error" id="summary-usage-health"></span>
+            </span>
+            <div class="usage-toggle" id="summary-usage-toggle">
+                <button type="button" data-mode="claude" class="active">Claude</button>
+                <button type="button" data-mode="extra">Extra</button>
+            </div>
         </div>
-        <div class="card-value clr-jcodemunch" id="jcodemunch-value">--</div>
-        <div class="card-sub" id="jcodemunch-sub">tokens saved</div>
-        <div class="progress-track"><div class="progress-fill fill-jcodemunch" id="jcodemunch-bar" style="width:0%"></div></div>
-        <div class="card-stats" id="jcodemunch-stats">
-            <span><span class="label">repos</span> <span class="val">--</span></span>
+        <div id="summary-usage-claude">
+            <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
+            <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
+            <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
+            <div class="usage-row"><span class="label">Reset</span><span class="val val-time" id="summary-claude-reset">--</span></div>
         </div>
-        <div class="sparkline-container"><svg id="jcodemunch-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="jcodemunch-delta"></div>
+        <div id="summary-usage-extra" style="display:none;">
+            <div class="card-value dim" id="summary-extra-value">n/a</div>
+            <div class="card-sub" id="summary-extra-detail">not enabled</div>
+            <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%"></div></div>
+        </div>
     </div>
-
-    <!-- jDocMunch -->
-    <div class="card" id="jdocmunch-card">
-        <div class="card-header">
-            <span class="health-dot health-error" id="jdocmunch-health"></span><a href="https://github.com/jgravelle/jdocmunch-mcp" target="_blank" class="card-name">jDocMunch</a>
-            <span class="card-version" id="jdocmunch-version">--</span>
-        </div>
-        <div class="card-value clr-jdocmunch" id="jdocmunch-value">--</div>
-        <div class="card-sub" id="jdocmunch-sub">tokens saved</div>
-        <div class="progress-track"><div class="progress-fill fill-jdocmunch" id="jdocmunch-bar" style="width:0%"></div></div>
-        <div class="card-stats" id="jdocmunch-stats">
-            <span><span class="label">docs</span> <span class="val">--</span></span>
-        </div>
-        <div class="sparkline-container"><svg id="jdocmunch-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="jdocmunch-delta"></div>
-    </div>
-
 </div>
 
 <!-- Activity Feed -->
@@ -1812,13 +1456,47 @@ function applyPctField(el, val) {
     }
 }
 
-var TOOLS = ['rtk', 'headroom', 'jcodemunch', 'jdocmunch'];
+var TOOLS = ['rtk', 'headroom'];
 var TOOL_COLOURS = {
     rtk: '#3b82f6',
-    headroom: '#8b5cf6',
-    jcodemunch: '#ec4899',
-    jdocmunch: '#14b8a6'
+    headroom: '#8b5cf6'
 };
+
+// Usage card toggle state. userOverride is null until the user clicks a
+// segment; after that it sticks to "claude" or "extra" for the session and
+// the SSE tick's auto-default is ignored. See spec: docs/superpowers/specs/
+// 2026-04-15-drop-jcode-jdoc-merge-usage-design.md
+var usageUserOverride = null;
+
+function wireUsageToggle() {
+    var toggle = document.getElementById('summary-usage-toggle');
+    if (!toggle) return;
+    var buttons = toggle.querySelectorAll('button');
+    for (var i = 0; i < buttons.length; i++) {
+        buttons[i].addEventListener('click', function(e) {
+            var btn = e.currentTarget;
+            if (btn.disabled) return;
+            usageUserOverride = btn.getAttribute('data-mode');
+            applyUsageMode(usageUserOverride);
+        });
+    }
+}
+
+function applyUsageMode(mode) {
+    var claudeBody = document.getElementById('summary-usage-claude');
+    var extraBody = document.getElementById('summary-usage-extra');
+    var buttons = document.querySelectorAll('#summary-usage-toggle button');
+    for (var i = 0; i < buttons.length; i++) {
+        buttons[i].className = buttons[i].getAttribute('data-mode') === mode ? 'active' : '';
+    }
+    if (mode === 'extra') {
+        claudeBody.style.display = 'none';
+        extraBody.style.display = '';
+    } else {
+        claudeBody.style.display = '';
+        extraBody.style.display = 'none';
+    }
+}
 
 function renderSparkline(svgEl, points, tool) {
     if (!points || points.length < 2) {
@@ -1855,8 +1533,6 @@ function updateDashboard(d) {
     var cu = d.claude_usage || {};
     var rtk = d.rtk || {};
     var hr = d.headroom || {};
-    var jc = d.jcodemunch || {};
-    var jd = d.jdocmunch || {};
 
     var hrLifetimeTokens = hr.lifetime_saved || 0;
     var hrLifetimeUsd = hr.lifetime_saved_usd || 0;
@@ -1870,58 +1546,59 @@ function updateDashboard(d) {
     // --- Combined card ---
     document.getElementById('summary-combined-health').className = 'health-dot ' + (d.ready ? 'health-ok' : 'health-error');
     document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
-    var combinedUsdEl = document.getElementById('summary-combined-usd');
+    var combinedUsd = null;
     if (usdPerToken != null) {
-        var nonHrTokens = (rtk.total_saved || 0) + (jc.total_saved || 0) + (jd.total_saved || 0);
-        var combinedUsd = hrLifetimeUsd + nonHrTokens * usdPerToken;
-        combinedUsdEl.textContent = '≈ $' + combinedUsd.toFixed(2) + ' saved';
-    } else {
-        combinedUsdEl.textContent = '--';
+        var nonHrTokens = rtk.total_saved || 0;
+        combinedUsd = hrLifetimeUsd + nonHrTokens * usdPerToken;
     }
+    document.getElementById('summary-combined-sub').textContent = tokensSavedSub(combinedUsd);
     document.getElementById('summary-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
-    document.getElementById('summary-last-week').textContent = w.last_week != null ? (w.last_week === 0 ? '0' : formatTokens(w.last_week, true)) : '--';
     document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
 
-    // --- Claude Usage card ---
-    // cu.health can be "ok" / "stale" / "error". Stale means Headroom's
-    // subscription_window poller stopped refreshing (expired credentials,
-    // upstream errors) and the percentages are frozen from an older poll.
-    // Fall back to active-derived when the field is missing (legacy shape).
+    // --- Usage card (merged Claude + Extra with toggle) ---
     var cuHealth = cu.health || (cu.active ? 'ok' : 'error');
-    document.getElementById('summary-claude-health').className = 'health-dot health-' + cuHealth;
+    document.getElementById('summary-usage-health').className = 'health-dot health-' + cuHealth;
+
+    // Claude sub-view
     applyPctField(document.getElementById('summary-session-pct'), cu.active ? cu.session_pct : null);
     applyPctField(document.getElementById('summary-weekly-pct'), cu.active ? cu.weekly_pct : null);
     applyPctField(document.getElementById('summary-sonnet-pct'), cu.active ? cu.sonnet_pct : null);
     document.getElementById('summary-claude-reset').textContent = w.reset_display || '--';
 
-    // --- Extra Usage card ---
-    var extraCard = document.getElementById('summary-extra');
+    // Extra sub-view
+    var extraEnabled = !!(cu.active && cu.extra_usage_enabled);
     var extraVal = document.getElementById('summary-extra-value');
     var extraDetail = document.getElementById('summary-extra-detail');
     var extraBar = document.getElementById('summary-extra-bar');
-    document.getElementById('summary-extra-health').className = 'health-dot ' + (cu.active && cu.extra_usage_enabled ? 'health-ok' : 'health-error');
-    if (cu.active && cu.extra_usage_enabled) {
-        extraCard.className = 'card card-extra';
+    if (extraEnabled) {
         var extraPct = cu.extra_usage_pct || 0;
         extraVal.className = 'card-value ' + pctClass(extraPct);
         extraVal.textContent = (cu.extra_usage_pct != null ? cu.extra_usage_pct.toFixed(1) : '0') + '%';
         var used = cu.extra_usage_used;
         var limit = cu.extra_usage_monthly_limit;
-        if (used != null && limit != null) {
-            extraDetail.textContent = '$' + used.toFixed(2) + ' / $' + limit.toFixed(2);
-        } else {
-            extraDetail.textContent = 'active';
-        }
+        extraDetail.textContent = (used != null && limit != null)
+            ? '$' + used.toFixed(2) + ' / $' + limit.toFixed(2)
+            : 'active';
         extraBar.style.width = Math.min(100, Math.max(0, extraPct)) + '%';
         extraBar.className = 'progress-fill ' + pctClass(extraPct);
     } else {
-        extraCard.className = 'card card-extra inactive';
         extraVal.className = 'card-value dim';
         extraVal.textContent = 'n/a';
         extraDetail.textContent = 'not enabled';
         extraBar.style.width = '0%';
         extraBar.className = 'progress-fill';
     }
+
+    // Disable the Extra segment when extra is off; if the user had
+    // previously overridden to "extra", force-clear the override so the
+    // card falls back to Claude.
+    var extraBtn = document.querySelector('#summary-usage-toggle button[data-mode="extra"]');
+    if (extraBtn) extraBtn.disabled = !extraEnabled;
+    if (!extraEnabled && usageUserOverride === 'extra') usageUserOverride = null;
+
+    // Default mode auto-follows extra_usage_enabled until the user clicks.
+    var defaultMode = extraEnabled ? 'extra' : 'claude';
+    applyUsageMode(usageUserOverride || defaultMode);
 
     // RTK
     var rtkCard = document.getElementById('rtk-card');
@@ -1964,40 +1641,6 @@ function updateDashboard(d) {
             '<span><span class="label">proxy not active</span></span>';
     }
 
-    // jCodeMunch
-    var jcCard = document.getElementById('jcodemunch-card');
-    jcCard.className = jc.active ? 'card' : 'card inactive';
-    var jcHealth = jc.health || 'error';
-    var jcDot = document.getElementById('jcodemunch-health');
-    if (jcDot) jcDot.className = 'health-dot health-' + jcHealth;
-    document.getElementById('jcodemunch-version').textContent = shortVersion(jc.version);
-    document.getElementById('jcodemunch-value').textContent = jc.active ? formatTokens(jc.total_saved || 0) : '--';
-    document.getElementById('jcodemunch-sub').textContent = tokensSavedSub(jc.active ? tokensToUsd(jc.total_saved || 0) : null);
-    document.getElementById('jcodemunch-bar').style.width = (jc.freshness || 0) + '%';
-    if (jc.active) {
-        document.getElementById('jcodemunch-stats').innerHTML =
-            '<span><span class="label">repos</span> <span class="val">' + (jc.repos_indexed || 0) + '</span></span>' +
-            '<span><span class="label">indexed</span> <span class="val">' + (jc.index_size_mb || 0) + 'MB</span></span>' +
-            '<span><span class="label">active</span> <span class="val">' + (jc.freshness_label || 'idle') + '</span></span>';
-    }
-
-    // jDocMunch
-    var jdCard = document.getElementById('jdocmunch-card');
-    jdCard.className = jd.active ? 'card' : 'card inactive';
-    var jdHealth = jd.health || 'error';
-    var jdDot = document.getElementById('jdocmunch-health');
-    if (jdDot) jdDot.className = 'health-dot health-' + jdHealth;
-    document.getElementById('jdocmunch-version').textContent = shortVersion(jd.version);
-    document.getElementById('jdocmunch-value').textContent = jd.active ? formatTokens(jd.total_saved || 0) : '--';
-    document.getElementById('jdocmunch-sub').textContent = tokensSavedSub(jd.active ? tokensToUsd(jd.total_saved || 0) : null);
-    document.getElementById('jdocmunch-bar').style.width = (jd.freshness || 0) + '%';
-    if (jd.active) {
-        document.getElementById('jdocmunch-stats').innerHTML =
-            '<span><span class="label">docs</span> <span class="val">' + (jd.docs_indexed || 0) + '</span></span>' +
-            '<span><span class="label">indexed</span> <span class="val">' + (jd.index_size_mb || 0) + 'MB</span></span>' +
-            '<span><span class="label">active</span> <span class="val">' + (jd.freshness_label || 'idle') + '</span></span>';
-    }
-
     // Sparklines
     if (d.sparklines) {
         for (var i = 0; i < TOOLS.length; i++) {
@@ -2005,16 +1648,6 @@ function updateDashboard(d) {
             var sp = d.sparklines[t];
             var pts = sp ? (sp.points || sp) : [];
             renderSparkline(document.getElementById(t + '-sparkline'), pts, t);
-
-            var deltaEl = document.getElementById(t + '-delta');
-            var delta = sp ? (sp.delta || 0) : 0;
-            if (delta > 0) {
-                deltaEl.textContent = '+' + formatTokens(delta);
-                deltaEl.className = 'card-delta active';
-            } else {
-                deltaEl.textContent = '';
-                deltaEl.className = 'card-delta';
-            }
         }
     }
 
@@ -2066,20 +1699,7 @@ function escHtml(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Clock
-function updateClock() {
-    var now = new Date();
-    var h = String(now.getHours()).padStart(2, '0');
-    var m = String(now.getMinutes()).padStart(2, '0');
-    var s = String(now.getSeconds()).padStart(2, '0');
-    var months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-    var day = String(now.getDate()).padStart(2, '0');
-    var mon = months[now.getMonth()];
-    var yr = now.getFullYear();
-    document.getElementById('clock').textContent = h + ':' + m + ':' + s + ' \u25aa ' + day + ' ' + mon + ' ' + yr;
-}
-setInterval(updateClock, 1000);
-updateClock();
+wireUsageToggle();
 
 // SSE
 var source = new EventSource('/events');
