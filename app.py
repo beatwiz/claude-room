@@ -1040,7 +1040,10 @@ body {
 .header-right {
     color: #666;
     font-size: 13px;
+    text-decoration: none;
+    letter-spacing: 2px;
 }
+.header-right:hover { color: #00ff88; text-shadow: 0 0 6px #00ff88; }
 
 /* Cards grid */
 .cards {
@@ -1307,7 +1310,7 @@ body {
     <a class="header-left" href="https://github.com/Will-Luck/claude-tools-dashboard" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
         <div class="header-title">CLAUDE ROOM</div>
     </a>
-    <div class="header-right">DASHBOARD</div>
+    <a class="header-right" href="__HEADROOM_DASHBOARD_URL__" target="_blank" rel="noopener noreferrer" title="Open Headroom dashboard">HEADROOM DASHBOARD</a>
 </div>
 
 <!-- Cards -->
@@ -1739,9 +1742,20 @@ source.onerror = function() {
 
 # --- Routes ---
 
+def _headroom_dashboard_url():
+    """Browser-reachable Headroom dashboard URL.
+
+    HEADROOM_URL may use `host.docker.internal` inside the container — that
+    hostname is meaningless in the user's browser, so swap it for the
+    loopback the port-forwarded Headroom instance actually listens on.
+    """
+    base = HEADROOM_URL.replace("host.docker.internal", "127.0.0.1")
+    return base.rstrip("/") + "/dashboard"
+
+
 @app.route("/")
 def index():
-    return HTML
+    return HTML.replace("__HEADROOM_DASHBOARD_URL__", _headroom_dashboard_url())
 
 
 @app.route("/health")
