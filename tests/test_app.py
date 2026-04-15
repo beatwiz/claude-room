@@ -30,7 +30,6 @@ CONTRACT_KEYS = [
     "combined_saved",
     "combined_saved_usd",
     "this_week_saved",
-    "last_week_saved",
     "burn_rate_daily",
     "week_is_fresh",
     "rtk_active",
@@ -94,7 +93,6 @@ def test_flatten_snapshot_none_returns_ready_false():
     # Counter fields are zero
     assert flat["combined_saved"] == 0
     assert flat["this_week_saved"] == 0
-    assert flat["last_week_saved"] == 0
     assert flat["burn_rate_daily"] == 0
     assert flat["week_is_fresh"] is False
 
@@ -163,7 +161,6 @@ FULL_SNAP = {
     },
     "weekly": {
         "this_week": 8000,
-        "last_week": 12000,
         "burn_rate_daily": 1200,
         "reset_display": "Thu 17 Apr 15:00",
         "week_is_fresh": False,
@@ -224,7 +221,6 @@ def test_flatten_snapshot_full_payload():
     # rate = 584.41 / 117309038; combined_usd = 584.41 + rtk_saved*rate
     assert flat["combined_saved_usd"] == pytest.approx(584.41 + 50000 * (584.41 / 117309038))
     assert flat["this_week_saved"] == 8000
-    assert flat["last_week_saved"] == 12000
     assert flat["burn_rate_daily"] == 1200
     assert flat["week_is_fresh"] is False
 
@@ -311,7 +307,6 @@ def test_flatten_snapshot_missing_weekly():
     flat = app._flatten_snapshot(snap)
 
     assert flat["this_week_saved"] == 0
-    assert flat["last_week_saved"] == 0
     assert flat["burn_rate_daily"] == 0
     assert flat["week_is_fresh"] is False
     assert flat["weekly_reset_display"] is None

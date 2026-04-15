@@ -702,7 +702,6 @@ def _flatten_snapshot(snap):
         "combined_saved": snap.get("combined_saved", 0),
         "combined_saved_usd": combined_saved_usd,
         "this_week_saved": weekly.get("this_week", 0),
-        "last_week_saved": weekly.get("last_week", 0),
         "burn_rate_daily": weekly.get("burn_rate_daily", 0),
         "week_is_fresh": weekly.get("week_is_fresh", False),
 
@@ -796,11 +795,8 @@ def collect_all():
         fresh_reset = claude_usage["weekly_reset"]
         stored_reset = weekly_data.get("weekly_reset_at", "")
 
-        # Reset has moved forward -- rotate weeks
+        # Reset has moved forward -- rotate baseline to the new window
         if not _same_reset_window(fresh_reset, stored_reset) and stored_reset:
-            baseline = weekly_data.get("current_week_baseline", 0)
-            weekly_data["last_week_savings"] = combined_saved - baseline
-            weekly_data["last_week_end"] = stored_reset
             weekly_data["current_week_baseline"] = combined_saved
             weekly_data["current_week_start"] = stored_reset
             weekly_data["weekly_reset_at"] = fresh_reset
@@ -810,11 +806,9 @@ def collect_all():
             weekly_data["current_week_baseline"] = combined_saved
             weekly_data["current_week_start"] = datetime.now(timezone.utc).isoformat()
             weekly_data["weekly_reset_at"] = fresh_reset
-            weekly_data["last_week_savings"] = 0
             _save_weekly_cache(weekly_data)
 
     this_week_savings = combined_saved - weekly_data.get("current_week_baseline", combined_saved)
-    last_week_savings = weekly_data.get("last_week_savings", 0)
 
     # Burn rate: savings per day this week
     week_start = weekly_data.get("current_week_start")
@@ -919,7 +913,6 @@ def collect_all():
         "claude_usage": claude_usage or {"active": False},
         "weekly": {
             "this_week": this_week_savings,
-            "last_week": last_week_savings,
             "burn_rate_daily": burn_rate_daily,
             "reset_display": reset_display,
             "week_is_fresh": week_is_fresh,
@@ -1009,13 +1002,6 @@ body {
 .header-left:hover .header-title {
     text-shadow: 0 0 6px #00ff88;
 }
-.pulse-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #00ff88;
-    animation: pulse 2s infinite;
-}
 @keyframes pulse {
     0%, 100% { opacity: 1; box-shadow: 0 0 4px #00ff88; }
     50% { opacity: 0.4; box-shadow: 0 0 1px #00ff88; }
@@ -1051,7 +1037,6 @@ body {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 12px;
-    position: relative;
 }
 .card-name {
     font-size: 12px;
@@ -1176,14 +1161,17 @@ body {
 .stroke-headroom { stroke: #8b5cf6; }
 .area-headroom { fill: rgba(139, 92, 246, 0.1); }
 
+.card-name-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 .health-dot {
-    width: 5px;
-    height: 5px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    position: absolute;
-    left: -14px;
-    top: 50%;
-    transform: translateY(-50%);
+    display: inline-block;
+    flex: 0 0 auto;
 }
 .health-ok {
     background: #00ff88;
@@ -1303,7 +1291,6 @@ body {
 <!-- Header -->
 <div class="header">
     <a class="header-left" href="https://github.com/Will-Luck/claude-tools-dashboard" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
-        <div class="pulse-dot"></div>
         <div class="header-title">CLAUDE TOOLS</div>
     </a>
     <div class="header-right" id="clock">--:--:-- &blacksquare; -- --- ----</div>
@@ -1314,8 +1301,10 @@ body {
     <!-- Combined -->
     <div class="card card-combined" id="summary-combined">
         <div class="card-header">
-            <span class="health-dot health-ok" id="summary-combined-health"></span>
-            <span class="card-name">Combined</span>
+            <span class="card-name-group">
+                <span class="card-name">Combined</span>
+                <span class="health-dot health-ok" id="summary-combined-health"></span>
+            </span>
         </div>
         <div class="card-value" id="summary-combined-value">--</div>
         <div class="card-sub" id="summary-combined-sub">tokens saved</div>
@@ -1328,7 +1317,10 @@ body {
     <!-- RTK -->
     <div class="card" id="rtk-card">
         <div class="card-header">
-            <span class="health-dot health-error" id="rtk-health"></span><a href="https://github.com/rtk-ai/rtk" target="_blank" class="card-name">RTK</a>
+            <span class="card-name-group">
+                <a href="https://github.com/rtk-ai/rtk" target="_blank" class="card-name">RTK</a>
+                <span class="health-dot health-error" id="rtk-health"></span>
+            </span>
             <span class="card-version" id="rtk-version">--</span>
         </div>
         <div class="card-value clr-rtk" id="rtk-value">--</div>
@@ -1344,7 +1336,10 @@ body {
     <!-- Headroom -->
     <div class="card" id="headroom-card">
         <div class="card-header">
-            <span class="health-dot health-error" id="headroom-health"></span><a href="https://github.com/chopratejas/headroom" target="_blank" class="card-name">Headroom</a>
+            <span class="card-name-group">
+                <a href="https://github.com/chopratejas/headroom" target="_blank" class="card-name">Headroom</a>
+                <span class="health-dot health-error" id="headroom-health"></span>
+            </span>
             <span class="card-version" id="headroom-version">--</span>
         </div>
         <div class="card-value clr-headroom" id="headroom-value">--</div>
@@ -1360,8 +1355,10 @@ body {
     <!-- Usage (merged Claude / Extra with toggle) -->
     <div class="card card-usage" id="summary-usage">
         <div class="card-header">
-            <span class="health-dot health-error" id="summary-usage-health"></span>
-            <span class="card-name">Usage</span>
+            <span class="card-name-group">
+                <span class="card-name">Usage</span>
+                <span class="health-dot health-error" id="summary-usage-health"></span>
+            </span>
             <div class="usage-toggle" id="summary-usage-toggle">
                 <button type="button" data-mode="claude" class="active">Claude</button>
                 <button type="button" data-mode="extra">Extra</button>
