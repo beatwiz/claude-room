@@ -1110,6 +1110,90 @@ body {
     100% { opacity: 1; }
 }
 
+/* Combined + Usage card specifics */
+.cards .card-combined .card-value { color: #00ff88; margin-bottom: 0; }
+.cards .card-combined .card-sub-usd { color: #5cc48a; font-size: 12px; margin-top: 2px; }
+.cards .card-combined .combined-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.cards .card-combined .combined-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.cards .card-combined .combined-stats .stat-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: baseline;
+}
+.cards .card-combined .combined-stats .label {
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 10px;
+}
+.cards .card-combined .combined-stats .val {
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
+}
+.cards .card-combined .val-live { color: #00ff88; }
+.cards .card-combined .val-rate { color: #5cc48a; }
+.cards .card-combined .val-cold { color: #666; }
+
+.cards .card-usage .usage-toggle {
+    display: flex;
+    gap: 0;
+    background: #0a0a0a;
+    border: 1px solid #1a1a2e;
+    border-radius: 3px;
+    padding: 2px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.cards .card-usage .usage-toggle button {
+    background: transparent;
+    border: none;
+    color: #666;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    border-radius: 2px;
+}
+.cards .card-usage .usage-toggle button.active {
+    background: #1a1a2e;
+    color: #fff;
+}
+.cards .card-usage .usage-toggle button:disabled {
+    color: #333;
+    cursor: not-allowed;
+}
+.cards .card-usage .usage-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 4px 0;
+    font-size: 13px;
+    color: #aaa;
+}
+.cards .card-usage .usage-row .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.cards .card-usage .usage-row .val { color: #fff; font-weight: 600; }
+.cards .card-usage .usage-row .val.pct-green { color: #00ff88; }
+.cards .card-usage .usage-row .val.pct-yellow { color: #ffcc00; }
+.cards .card-usage .usage-row .val.pct-red { color: #ff4444; }
+.cards .card-usage .progress-track { margin-top: 12px; }
+.cards .card-usage .progress-fill.pct-green { background: #00ff88; }
+.cards .card-usage .progress-fill.pct-yellow { background: #ffcc00; }
+.cards .card-usage .progress-fill.pct-red { background: #ff4444; }
+.cards .card-usage .val-time { color: #bbb; font-weight: 600; }
+
 /* Tool accent colours — purely for card identity, no semantic meaning */
 .clr-rtk { color: #3b82f6; }
 .fill-rtk { background: #3b82f6; }
@@ -1121,15 +1205,6 @@ body {
 .stroke-headroom { stroke: #8b5cf6; }
 .area-headroom { fill: rgba(139, 92, 246, 0.1); }
 
-.clr-jcodemunch { color: #ec4899; }
-.fill-jcodemunch { background: #ec4899; }
-.stroke-jcodemunch { stroke: #ec4899; }
-.area-jcodemunch { fill: rgba(236, 72, 153, 0.1); }
-
-.clr-jdocmunch { color: #14b8a6; }
-.fill-jdocmunch { background: #14b8a6; }
-.stroke-jdocmunch { stroke: #14b8a6; }
-.area-jdocmunch { fill: rgba(20, 184, 166, 0.1); }
 .health-dot {
     width: 5px;
     height: 5px;
@@ -1251,128 +1326,6 @@ body {
 @media (max-width: 550px) {
     .cards { grid-template-columns: 1fr; }
 }
-/* Summary cards */
-.summary-cards {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-    margin-bottom: 12px;
-}
-.summary-cards .card.card-combined {
-    grid-column: span 2;
-}
-.summary-cards .card-value {
-    color: #fff;
-    margin-bottom: 0;
-}
-.summary-cards .card-value.dim {
-    color: #666;
-}
-.summary-cards .card-combined .card-value {
-    color: #00ff88;
-}
-.summary-cards .card-claude .card-version {
-    color: #bbb;
-}
-.summary-cards .card-sub {
-    color: #aaa;
-    font-size: 13px;
-    margin-top: 4px;
-    margin-bottom: 0;
-}
-.summary-cards .card-extra .progress-track {
-    margin-top: 12px;
-}
-.summary-cards .combined-body {
-    display: flex;
-    align-items: center;
-    gap: 48px;
-}
-.summary-cards .combined-left {
-    flex: 1 1 0;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-}
-.summary-cards .val-time {
-    color: #bbb;
-    font-weight: 600;
-}
-.summary-cards .card-sub-usd {
-    color: #5cc48a;
-    font-size: 12px;
-    margin-top: 2px;
-}
-.summary-cards .combined-stats {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    flex: 1 1 0;
-    min-width: 0;
-}
-.summary-cards .combined-stats .stat-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    align-items: baseline;
-}
-.summary-cards .combined-stats .label {
-    color: #888;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-size: 10px;
-}
-.summary-cards .combined-stats .val {
-    color: #fff;
-    font-weight: 600;
-    font-size: 14px;
-}
-.summary-cards .val-live { color: #00ff88; }
-.summary-cards .val-rate { color: #5cc48a; }
-.summary-cards .val-cold { color: #666; }
-.summary-cards .usage-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding: 4px 0;
-    font-size: 13px;
-    color: #aaa;
-}
-.summary-cards .usage-row .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
-.summary-cards .usage-row .val { color: #fff; font-weight: 600; }
-.summary-cards .usage-row .val.pct-green { color: #00ff88; }
-.summary-cards .usage-row .val.pct-yellow { color: #ffcc00; }
-.summary-cards .usage-row .val.pct-red { color: #ff4444; }
-.summary-cards .card-extra .progress-fill.pct-green { background: #00ff88; }
-.summary-cards .card-extra .progress-fill.pct-yellow { background: #ffcc00; }
-.summary-cards .card-extra .progress-fill.pct-red { background: #ff4444; }
-@media (max-width: 1000px) {
-    .summary-cards { grid-template-columns: repeat(2, 1fr); }
-    .summary-cards .card.card-combined { grid-column: span 2; }
-}
-@media (max-width: 600px) {
-    .header { flex-wrap: wrap; justify-content: center; gap: 4px; }
-    .header-left { width: 100%; justify-content: center; }
-    .header-right { font-size: 12px; }
-    html, body { overflow: auto; height: auto; }
-    .summary-cards { grid-template-columns: 1fr; }
-    .summary-cards .card.card-combined { grid-column: auto; }
-    .summary-cards .card-header {
-        flex-wrap: wrap;
-        gap: 4px 8px;
-    }
-    .summary-cards .combined-body {
-        flex-direction: column;
-        align-items: stretch;
-        gap: 16px;
-    }
-    .summary-cards .combined-body .card-value {
-        flex: none;
-    }
-    .summary-cards .combined-stats {
-        flex: none;
-    }
-}
 </style>
 </head>
 <body>
@@ -1385,15 +1338,16 @@ body {
     <div class="header-right" id="clock">--:--:-- &blacksquare; -- --- ----</div>
 </div>
 
-<!-- Summary Cards -->
-<div class="summary-cards">
+<!-- Cards -->
+<div class="cards">
+    <!-- Combined -->
     <div class="card card-combined" id="summary-combined">
         <div class="card-header">
             <span class="health-dot health-ok" id="summary-combined-health"></span>
             <span class="card-name">Combined</span>
         </div>
         <div class="combined-body">
-            <div class="combined-left">
+            <div>
                 <div class="card-value" id="summary-combined-value">--</div>
                 <div class="card-sub">tokens saved</div>
                 <div class="card-sub card-sub-usd" id="summary-combined-usd">--</div>
@@ -1405,30 +1359,30 @@ body {
             </div>
         </div>
     </div>
-    <div class="card card-claude" id="summary-claude">
-        <div class="card-header">
-            <span class="health-dot health-error" id="summary-claude-health"></span>
-            <span class="card-name">Claude Usage</span>
-        </div>
-        <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
-        <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
-        <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
-        <div class="usage-row"><span class="label">Reset</span><span class="val val-time" id="summary-claude-reset">--</span></div>
-    </div>
-    <div class="card card-extra inactive" id="summary-extra">
-        <div class="card-header">
-            <span class="health-dot health-error" id="summary-extra-health"></span>
-            <span class="card-name">Extra Usage</span>
-            <span class="card-version">overage</span>
-        </div>
-        <div class="card-value dim" id="summary-extra-value">n/a</div>
-        <div class="card-sub" id="summary-extra-detail">not enabled</div>
-        <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%"></div></div>
-    </div>
-</div>
 
-<!-- Cards -->
-<div class="cards">
+    <!-- Usage (merged Claude / Extra with toggle) -->
+    <div class="card card-usage" id="summary-usage">
+        <div class="card-header">
+            <span class="health-dot health-error" id="summary-usage-health"></span>
+            <span class="card-name">Usage</span>
+            <div class="usage-toggle" id="summary-usage-toggle">
+                <button type="button" data-mode="claude" class="active">Claude</button>
+                <button type="button" data-mode="extra">Extra</button>
+            </div>
+        </div>
+        <div id="summary-usage-claude">
+            <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
+            <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
+            <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
+            <div class="usage-row"><span class="label">Reset</span><span class="val val-time" id="summary-claude-reset">--</span></div>
+        </div>
+        <div id="summary-usage-extra" style="display:none;">
+            <div class="card-value dim" id="summary-extra-value">n/a</div>
+            <div class="card-sub" id="summary-extra-detail">not enabled</div>
+            <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%"></div></div>
+        </div>
+    </div>
+
     <!-- RTK -->
     <div class="card" id="rtk-card">
         <div class="card-header">
@@ -1460,39 +1414,6 @@ body {
         <div class="sparkline-container"><svg id="headroom-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
         <div class="card-delta" id="headroom-delta"></div>
     </div>
-
-    <!-- jCodeMunch -->
-    <div class="card" id="jcodemunch-card">
-        <div class="card-header">
-            <span class="health-dot health-error" id="jcodemunch-health"></span><a href="https://github.com/jgravelle/jcodemunch-mcp" target="_blank" class="card-name">jCodeMunch</a>
-            <span class="card-version" id="jcodemunch-version">--</span>
-        </div>
-        <div class="card-value clr-jcodemunch" id="jcodemunch-value">--</div>
-        <div class="card-sub" id="jcodemunch-sub">tokens saved</div>
-        <div class="progress-track"><div class="progress-fill fill-jcodemunch" id="jcodemunch-bar" style="width:0%"></div></div>
-        <div class="card-stats" id="jcodemunch-stats">
-            <span><span class="label">repos</span> <span class="val">--</span></span>
-        </div>
-        <div class="sparkline-container"><svg id="jcodemunch-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="jcodemunch-delta"></div>
-    </div>
-
-    <!-- jDocMunch -->
-    <div class="card" id="jdocmunch-card">
-        <div class="card-header">
-            <span class="health-dot health-error" id="jdocmunch-health"></span><a href="https://github.com/jgravelle/jdocmunch-mcp" target="_blank" class="card-name">jDocMunch</a>
-            <span class="card-version" id="jdocmunch-version">--</span>
-        </div>
-        <div class="card-value clr-jdocmunch" id="jdocmunch-value">--</div>
-        <div class="card-sub" id="jdocmunch-sub">tokens saved</div>
-        <div class="progress-track"><div class="progress-fill fill-jdocmunch" id="jdocmunch-bar" style="width:0%"></div></div>
-        <div class="card-stats" id="jdocmunch-stats">
-            <span><span class="label">docs</span> <span class="val">--</span></span>
-        </div>
-        <div class="sparkline-container"><svg id="jdocmunch-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="jdocmunch-delta"></div>
-    </div>
-
 </div>
 
 <!-- Activity Feed -->
@@ -1562,13 +1483,47 @@ function applyPctField(el, val) {
     }
 }
 
-var TOOLS = ['rtk', 'headroom', 'jcodemunch', 'jdocmunch'];
+var TOOLS = ['rtk', 'headroom'];
 var TOOL_COLOURS = {
     rtk: '#3b82f6',
-    headroom: '#8b5cf6',
-    jcodemunch: '#ec4899',
-    jdocmunch: '#14b8a6'
+    headroom: '#8b5cf6'
 };
+
+// Usage card toggle state. userOverride is null until the user clicks a
+// segment; after that it sticks to "claude" or "extra" for the session and
+// the SSE tick's auto-default is ignored. See spec: docs/superpowers/specs/
+// 2026-04-15-drop-jcode-jdoc-merge-usage-design.md
+var usageUserOverride = null;
+
+function wireUsageToggle() {
+    var toggle = document.getElementById('summary-usage-toggle');
+    if (!toggle) return;
+    var buttons = toggle.querySelectorAll('button');
+    for (var i = 0; i < buttons.length; i++) {
+        buttons[i].addEventListener('click', function(e) {
+            var btn = e.currentTarget;
+            if (btn.disabled) return;
+            usageUserOverride = btn.getAttribute('data-mode');
+            applyUsageMode(usageUserOverride);
+        });
+    }
+}
+
+function applyUsageMode(mode) {
+    var claudeBody = document.getElementById('summary-usage-claude');
+    var extraBody = document.getElementById('summary-usage-extra');
+    var buttons = document.querySelectorAll('#summary-usage-toggle button');
+    for (var i = 0; i < buttons.length; i++) {
+        buttons[i].className = buttons[i].getAttribute('data-mode') === mode ? 'active' : '';
+    }
+    if (mode === 'extra') {
+        claudeBody.style.display = 'none';
+        extraBody.style.display = '';
+    } else {
+        claudeBody.style.display = '';
+        extraBody.style.display = 'none';
+    }
+}
 
 function renderSparkline(svgEl, points, tool) {
     if (!points || points.length < 2) {
@@ -1605,8 +1560,6 @@ function updateDashboard(d) {
     var cu = d.claude_usage || {};
     var rtk = d.rtk || {};
     var hr = d.headroom || {};
-    var jc = d.jcodemunch || {};
-    var jd = d.jdocmunch || {};
 
     var hrLifetimeTokens = hr.lifetime_saved || 0;
     var hrLifetimeUsd = hr.lifetime_saved_usd || 0;
@@ -1622,7 +1575,7 @@ function updateDashboard(d) {
     document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
     var combinedUsdEl = document.getElementById('summary-combined-usd');
     if (usdPerToken != null) {
-        var nonHrTokens = (rtk.total_saved || 0) + (jc.total_saved || 0) + (jd.total_saved || 0);
+        var nonHrTokens = rtk.total_saved || 0;
         var combinedUsd = hrLifetimeUsd + nonHrTokens * usdPerToken;
         combinedUsdEl.textContent = '≈ $' + combinedUsd.toFixed(2) + ' saved';
     } else {
@@ -1632,46 +1585,50 @@ function updateDashboard(d) {
     document.getElementById('summary-last-week').textContent = w.last_week != null ? (w.last_week === 0 ? '0' : formatTokens(w.last_week, true)) : '--';
     document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
 
-    // --- Claude Usage card ---
-    // cu.health can be "ok" / "stale" / "error". Stale means Headroom's
-    // subscription_window poller stopped refreshing (expired credentials,
-    // upstream errors) and the percentages are frozen from an older poll.
-    // Fall back to active-derived when the field is missing (legacy shape).
+    // --- Usage card (merged Claude + Extra with toggle) ---
     var cuHealth = cu.health || (cu.active ? 'ok' : 'error');
-    document.getElementById('summary-claude-health').className = 'health-dot health-' + cuHealth;
+    document.getElementById('summary-usage-health').className = 'health-dot health-' + cuHealth;
+
+    // Claude sub-view
     applyPctField(document.getElementById('summary-session-pct'), cu.active ? cu.session_pct : null);
     applyPctField(document.getElementById('summary-weekly-pct'), cu.active ? cu.weekly_pct : null);
     applyPctField(document.getElementById('summary-sonnet-pct'), cu.active ? cu.sonnet_pct : null);
     document.getElementById('summary-claude-reset').textContent = w.reset_display || '--';
 
-    // --- Extra Usage card ---
-    var extraCard = document.getElementById('summary-extra');
+    // Extra sub-view
+    var extraEnabled = !!(cu.active && cu.extra_usage_enabled);
     var extraVal = document.getElementById('summary-extra-value');
     var extraDetail = document.getElementById('summary-extra-detail');
     var extraBar = document.getElementById('summary-extra-bar');
-    document.getElementById('summary-extra-health').className = 'health-dot ' + (cu.active && cu.extra_usage_enabled ? 'health-ok' : 'health-error');
-    if (cu.active && cu.extra_usage_enabled) {
-        extraCard.className = 'card card-extra';
+    if (extraEnabled) {
         var extraPct = cu.extra_usage_pct || 0;
         extraVal.className = 'card-value ' + pctClass(extraPct);
         extraVal.textContent = (cu.extra_usage_pct != null ? cu.extra_usage_pct.toFixed(1) : '0') + '%';
         var used = cu.extra_usage_used;
         var limit = cu.extra_usage_monthly_limit;
-        if (used != null && limit != null) {
-            extraDetail.textContent = '$' + used.toFixed(2) + ' / $' + limit.toFixed(2);
-        } else {
-            extraDetail.textContent = 'active';
-        }
+        extraDetail.textContent = (used != null && limit != null)
+            ? '$' + used.toFixed(2) + ' / $' + limit.toFixed(2)
+            : 'active';
         extraBar.style.width = Math.min(100, Math.max(0, extraPct)) + '%';
         extraBar.className = 'progress-fill ' + pctClass(extraPct);
     } else {
-        extraCard.className = 'card card-extra inactive';
         extraVal.className = 'card-value dim';
         extraVal.textContent = 'n/a';
         extraDetail.textContent = 'not enabled';
         extraBar.style.width = '0%';
         extraBar.className = 'progress-fill';
     }
+
+    // Disable the Extra segment when extra is off; if the user had
+    // previously overridden to "extra", force-clear the override so the
+    // card falls back to Claude.
+    var extraBtn = document.querySelector('#summary-usage-toggle button[data-mode="extra"]');
+    if (extraBtn) extraBtn.disabled = !extraEnabled;
+    if (!extraEnabled && usageUserOverride === 'extra') usageUserOverride = null;
+
+    // Default mode auto-follows extra_usage_enabled until the user clicks.
+    var defaultMode = extraEnabled ? 'extra' : 'claude';
+    applyUsageMode(usageUserOverride || defaultMode);
 
     // RTK
     var rtkCard = document.getElementById('rtk-card');
@@ -1712,40 +1669,6 @@ function updateDashboard(d) {
         document.getElementById('headroom-bar').style.width = '0%';
         document.getElementById('headroom-stats').innerHTML =
             '<span><span class="label">proxy not active</span></span>';
-    }
-
-    // jCodeMunch
-    var jcCard = document.getElementById('jcodemunch-card');
-    jcCard.className = jc.active ? 'card' : 'card inactive';
-    var jcHealth = jc.health || 'error';
-    var jcDot = document.getElementById('jcodemunch-health');
-    if (jcDot) jcDot.className = 'health-dot health-' + jcHealth;
-    document.getElementById('jcodemunch-version').textContent = shortVersion(jc.version);
-    document.getElementById('jcodemunch-value').textContent = jc.active ? formatTokens(jc.total_saved || 0) : '--';
-    document.getElementById('jcodemunch-sub').textContent = tokensSavedSub(jc.active ? tokensToUsd(jc.total_saved || 0) : null);
-    document.getElementById('jcodemunch-bar').style.width = (jc.freshness || 0) + '%';
-    if (jc.active) {
-        document.getElementById('jcodemunch-stats').innerHTML =
-            '<span><span class="label">repos</span> <span class="val">' + (jc.repos_indexed || 0) + '</span></span>' +
-            '<span><span class="label">indexed</span> <span class="val">' + (jc.index_size_mb || 0) + 'MB</span></span>' +
-            '<span><span class="label">active</span> <span class="val">' + (jc.freshness_label || 'idle') + '</span></span>';
-    }
-
-    // jDocMunch
-    var jdCard = document.getElementById('jdocmunch-card');
-    jdCard.className = jd.active ? 'card' : 'card inactive';
-    var jdHealth = jd.health || 'error';
-    var jdDot = document.getElementById('jdocmunch-health');
-    if (jdDot) jdDot.className = 'health-dot health-' + jdHealth;
-    document.getElementById('jdocmunch-version').textContent = shortVersion(jd.version);
-    document.getElementById('jdocmunch-value').textContent = jd.active ? formatTokens(jd.total_saved || 0) : '--';
-    document.getElementById('jdocmunch-sub').textContent = tokensSavedSub(jd.active ? tokensToUsd(jd.total_saved || 0) : null);
-    document.getElementById('jdocmunch-bar').style.width = (jd.freshness || 0) + '%';
-    if (jd.active) {
-        document.getElementById('jdocmunch-stats').innerHTML =
-            '<span><span class="label">docs</span> <span class="val">' + (jd.docs_indexed || 0) + '</span></span>' +
-            '<span><span class="label">indexed</span> <span class="val">' + (jd.index_size_mb || 0) + 'MB</span></span>' +
-            '<span><span class="label">active</span> <span class="val">' + (jd.freshness_label || 'idle') + '</span></span>';
     }
 
     // Sparklines
@@ -1830,6 +1753,7 @@ function updateClock() {
 }
 setInterval(updateClock, 1000);
 updateClock();
+wireUsageToggle();
 
 // SSE
 var source = new EventSource('/events');
