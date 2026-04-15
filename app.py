@@ -1325,10 +1325,10 @@ body {
         </div>
         <div class="card-value clr-rtk" id="rtk-value">--</div>
         <div class="card-sub" id="rtk-sub">tokens saved</div>
-        <div class="progress-track"><div class="progress-fill fill-rtk" id="rtk-bar" style="width:0%"></div></div>
         <div class="card-stats" id="rtk-stats">
             <span><span class="label">efficiency</span> <span class="val">--%</span></span>
         </div>
+        <div class="progress-track"><div class="progress-fill fill-rtk" id="rtk-bar" style="width:0%"></div></div>
         <div class="sparkline-container"><svg id="rtk-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
         <div class="card-delta" id="rtk-delta"></div>
     </div>
@@ -1344,10 +1344,10 @@ body {
         </div>
         <div class="card-value clr-headroom" id="headroom-value">--</div>
         <div class="card-sub" id="headroom-sub">awaiting first session</div>
-        <div class="progress-track"><div class="progress-fill fill-headroom" id="headroom-bar" style="width:0%"></div></div>
         <div class="card-stats" id="headroom-stats">
             <span><span class="label">proxy not active</span></span>
         </div>
+        <div class="progress-track"><div class="progress-fill fill-headroom" id="headroom-bar" style="width:0%"></div></div>
         <div class="sparkline-container"><svg id="headroom-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
         <div class="card-delta" id="headroom-delta"></div>
     </div>
