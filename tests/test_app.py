@@ -1,5 +1,7 @@
 """Tests for the claude-tools-dashboard Flask app and its helpers."""
 
+import json
+
 import pytest
 
 
@@ -156,11 +158,15 @@ FULL_SNAP = {
     "claude_usage": {
         "active": True,
         "session_pct": 42,
-        "session_reset": "2026-04-13T15:00:00+00:00",
+        # All reset timestamps are pinned far in the future so the contract
+        # tests stay green as wall-clock time marches past the original 2026
+        # fixture dates. _flatten_snapshot drops pct/reset fields whose reset
+        # window has already passed (see test_flatten_snapshot_drops_stale_*).
+        "session_reset": "2099-04-13T15:00:00+00:00",
         "weekly_pct": 18,
-        "weekly_reset": "2026-04-17T15:00:00+00:00",
+        "weekly_reset": "2099-04-17T15:00:00+00:00",
         "sonnet_pct": 6,
-        "sonnet_reset": "2026-04-17T15:00:00+00:00",
+        "sonnet_reset": "2099-04-17T15:00:00+00:00",
         "extra_usage_enabled": True,
         "extra_usage_monthly_limit": 17000,
         "extra_usage_used": 6072.0,
@@ -239,12 +245,12 @@ def test_flatten_snapshot_full_payload():
     # Claude usage
     assert flat["claude_active"] is True
     assert flat["session_pct"] == 42
-    assert flat["session_reset"] == "2026-04-13T15:00:00+00:00"
+    assert flat["session_reset"] == "2099-04-13T15:00:00+00:00"
     assert flat["weekly_pct"] == 18
-    assert flat["weekly_reset"] == "2026-04-17T15:00:00+00:00"
+    assert flat["weekly_reset"] == "2099-04-17T15:00:00+00:00"
     assert flat["weekly_reset_display"] == "Thu 17 Apr 15:00"
     assert flat["sonnet_pct"] == 6
-    assert flat["sonnet_reset"] == "2026-04-17T15:00:00+00:00"
+    assert flat["sonnet_reset"] == "2099-04-17T15:00:00+00:00"
 
     # Combined/weekly savings
     assert flat["combined_saved"] == 123456
@@ -502,6 +508,390 @@ def test_flatten_snapshot_no_usd_when_headroom_usd_missing():
     assert flat["combined_saved_usd"] is None
 
 
+def test_collect_headroom_uses_recent_requests_for_history(monkeypatch):
+    """Headroom activity feed should reflect recent proxy requests even with zero savings."""
+    import app
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode()
+
+    stats_payload = {
+        "tokens": {"saved": 0, "savings_percent": 0},
+        "compression_cache": {},
+        "display_session": {"tokens_saved": 0, "compression_savings_usd": 0},
+        "persistent_savings": {"lifetime": {"tokens_saved": 0, "compression_savings_usd": 0}},
+        "requests": {"total": 3, "failed": 0},
+        "latency": {"average_ms": 321.4},
+        "prefix_cache": {"totals": {"hit_rate": 0}},
+        "recent_requests": [
+            {
+                "timestamp": "2026-04-14T13:20:00+00:00",
+                "model": "gpt-5.4",
+                "input_tokens_original": 120,
+                "input_tokens_optimized": 120,
+                "tokens_saved": 0,
+                "savings_percent": 0,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(app, "_headroom_version", "1.0.0")
+    monkeypatch.setattr(app, "_headroom_last_total", 0)
+    monkeypatch.setattr(app, "_headroom_history", [])
+    monkeypatch.setattr(app, "urlopen", lambda url, timeout=2: _Resp(stats_payload))
+
+    data = app.collect_headroom()
+
+    assert data["active"] is True
+    assert data["requests_total"] == 3
+    assert data["history"] == [
+        {
+            "time": "2026-04-14T13:20:00+00:00",
+            "tool": "headroom",
+            "cmd": "gpt-5.4 120 input tokens",
+            "saved_tokens": 0,
+            "saved_pct": 0,
+        }
+    ]
+
+
+def test_collect_headroom_prefers_internal_history_over_recent_requests(monkeypatch):
+    """Headroom's /stats recent_requests list can be stale (kept to a tiny ring
+    buffer upstream) while the dashboard has already recorded every compression
+    event in _headroom_history via delta-on-total_saved. The feed must surface
+    those internally-tracked events, not the sparse upstream list, otherwise
+    fresh activity never shows up until recent_requests happens to rotate."""
+    import app
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+        def read(self):
+            return json.dumps(self._payload).encode()
+
+    # Seed an initial total so the first delta is captured.
+    monkeypatch.setattr(app, "_headroom_last_total", 1000)
+    monkeypatch.setattr(app, "_headroom_history", [])
+    monkeypatch.setattr(app, "_headroom_version", "1.0.0")
+
+    # Headroom response: recent_requests has ONE stale entry, but total_saved
+    # has jumped by 80000 — a new compression event we should detect.
+    payload = {
+        "tokens": {"saved": 81000, "savings_percent": 42.0},
+        "display_session": {"tokens_saved": 81000},
+        "persistent_savings": {"lifetime": {"tokens_saved": 81000}},
+        "requests": {"total": 20, "failed": 0},
+        "latency": {"average_ms": 100},
+        "prefix_cache": {"totals": {"hit_rate": 0}},
+        "recent_requests": [{
+            "timestamp": "2026-04-14T19:15:40.583031",
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens_original": 9,
+            "input_tokens_optimized": 8,
+            "tokens_saved": 1,
+            "savings_percent": 11.1,
+        }],
+    }
+    monkeypatch.setattr(app, "urlopen", lambda url, timeout=2: _Resp(payload))
+
+    result = app.collect_headroom()
+    assert result is not None
+    feed = result["history"]
+
+    # The feed must contain the internally-detected 80k compression event,
+    # not just the stale 1-token recent_requests entry.
+    big_events = [e for e in feed if e.get("saved_tokens", 0) >= 80000]
+    assert len(big_events) >= 1, f"feed should contain the 80k delta event, got {feed}"
+
+
+def test_normalize_iso_ts_passes_through_explicit_utc():
+    """Timestamps that already carry a UTC offset must round-trip unchanged."""
+    import app
+    from datetime import timezone, timedelta
+
+    lisbon = timezone(timedelta(hours=1))
+    result = app._normalize_iso_ts("2026-04-14T18:45:09.546274+00:00", lisbon)
+    assert result == "2026-04-14T18:45:09.546274+00:00"
+
+
+def test_normalize_iso_ts_applies_assumed_tz_to_naive():
+    """A naive ISO string must be interpreted in the assumed tz and converted to UTC.
+    This is the fix for headroom's upstream bug of emitting naive local timestamps
+    in recent_requests/savings_history while other fields use explicit UTC."""
+    import app
+    from datetime import timezone, timedelta
+
+    lisbon = timezone(timedelta(hours=1))  # WEST = UTC+1
+    # Headroom's naive "19:15:40" in Lisbon == "18:15:40" in UTC
+    result = app._normalize_iso_ts("2026-04-14T19:15:40.583031", lisbon)
+    assert result == "2026-04-14T18:15:40.583031+00:00"
+
+
+def test_normalize_iso_ts_handles_unparseable_input():
+    """Garbage strings should pass through unchanged instead of raising."""
+    import app
+    from datetime import timezone, timedelta
+
+    assert app._normalize_iso_ts("not-a-date", timezone(timedelta(hours=1))) == "not-a-date"
+    assert app._normalize_iso_ts(None, timezone.utc) is None
+    assert app._normalize_iso_ts("", timezone.utc) == ""
+
+
+def test_format_headroom_recent_requests_normalizes_naive_timestamp(monkeypatch):
+    """When headroom emits a naive timestamp, _format_headroom_recent_requests must
+    normalize it so the server-side sort by string equals a chronological sort."""
+    import app
+    from datetime import timezone, timedelta
+
+    lisbon = timezone(timedelta(hours=1))
+    monkeypatch.setattr(app, "_HEADROOM_ASSUMED_TZ", lisbon)
+
+    rows = app._format_headroom_recent_requests([
+        {
+            "timestamp": "2026-04-14T19:15:40.583031",
+            "model": "claude-haiku-4-5",
+            "input_tokens_original": 120,
+            "input_tokens_optimized": 110,
+            "tokens_saved": 10,
+            "savings_percent": 8.3,
+        }
+    ])
+
+    assert len(rows) == 1
+    assert rows[0]["time"] == "2026-04-14T18:15:40.583031+00:00"
+
+
+# --- collect_claude_usage reads from Headroom's /stats subscription_window ---
+#
+# History: this used to hit https://api.anthropic.com/api/oauth/usage directly
+# with an OAuth token read from ~/.claude/.credentials.json, but that endpoint
+# is per-token rate limited tighter than our collector's cadence and we were
+# permanently 429'd. Headroom already polls the same data on a sane schedule
+# and exposes it under subscription_window.latest on its /stats endpoint, so
+# we just piggyback on its cache instead. No credentials needed.
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return json.dumps(self._payload).encode()
+
+
+_HEADROOM_STATS_WITH_SUBSCRIPTION = {
+    "tokens": {"saved": 0, "savings_percent": 0},
+    "display_session": {"tokens_saved": 0, "compression_savings_usd": 0},
+    "persistent_savings": {"lifetime": {"tokens_saved": 0, "compression_savings_usd": 0}},
+    "requests": {"total": 0, "failed": 0},
+    "latency": {"average_ms": 0},
+    "prefix_cache": {"totals": {"hit_rate": 0}},
+    "recent_requests": [],
+    "subscription_window": {
+        "latest": {
+            "five_hour": {
+                "utilization_pct": 14.0,
+                "resets_at": "2026-04-15T04:00:00+00:00",
+                "seconds_to_reset": 11800.0,
+            },
+            "seven_day": {
+                "utilization_pct": 5.0,
+                "resets_at": "2026-04-21T18:00:00+00:00",
+                "seconds_to_reset": 580000.0,
+            },
+            "seven_day_sonnet": {
+                "utilization_pct": 8.0,
+                "resets_at": "2026-04-15T14:00:00+00:00",
+                "seconds_to_reset": 47800.0,
+            },
+            "extra_usage": {
+                "is_enabled": True,
+                "monthly_limit_usd": 170.0,
+                "used_credits_usd": 173.66,
+                "utilization_pct": 100.0,
+            },
+            "polled_at": "2026-04-15T00:42:09+00:00",
+        },
+    },
+}
+
+
+def test_collect_claude_usage_reads_from_headroom_subscription_window(monkeypatch):
+    """Happy path: /stats returns subscription_window.latest → map every field
+    into the claude_usage contract shape that _flatten_snapshot expects."""
+    import app
+
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+    monkeypatch.setattr(
+        app,
+        "urlopen",
+        lambda url, timeout=2: _FakeResp(_HEADROOM_STATS_WITH_SUBSCRIPTION),
+    )
+
+    result = app.collect_claude_usage()
+
+    assert result["active"] is True
+    assert result["session_pct"] == 14.0
+    assert result["session_reset"] == "2026-04-15T04:00:00+00:00"
+    assert result["weekly_pct"] == 5.0
+    assert result["weekly_reset"] == "2026-04-21T18:00:00+00:00"
+    assert result["sonnet_pct"] == 8.0
+    assert result["sonnet_reset"] == "2026-04-15T14:00:00+00:00"
+    # Extra usage units: USD now (was cents when we hit Anthropic direct).
+    assert result["extra_usage_enabled"] is True
+    assert result["extra_usage_monthly_limit"] == 170.0
+    assert result["extra_usage_used"] == 173.66
+    assert result["extra_usage_pct"] == 100.0
+
+
+def test_collect_claude_usage_inactive_when_headroom_unreachable_on_cold_start(monkeypatch):
+    """Cold start (no prior successful fetch) with Headroom unreachable →
+    {'active': False}. After we've seen a successful response, the last-good
+    fallback kicks in instead; that's covered by
+    test_collect_claude_usage_returns_last_good_on_transient_failure."""
+    import app
+    from urllib.error import URLError
+
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+
+    def _raise(*args, **kwargs):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr(app, "urlopen", _raise)
+
+    result = app.collect_claude_usage()
+
+    assert result == {"active": False}
+
+
+def test_collect_claude_usage_inactive_when_subscription_window_missing_on_cold_start(monkeypatch):
+    """Older Headroom builds may not emit subscription_window. On cold start
+    that's {'active': False}. Once we've ever seen a valid payload, a later
+    missing subscription_window hands back the last-good instead — same
+    fallback path as a transient URL error."""
+    import app
+
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+
+    # /stats payload without a subscription_window key at all
+    bare_stats = {
+        "tokens": {"saved": 0, "savings_percent": 0},
+        "requests": {"total": 0, "failed": 0},
+        "latency": {"average_ms": 0},
+        "prefix_cache": {"totals": {"hit_rate": 0}},
+        "recent_requests": [],
+    }
+
+    monkeypatch.setattr(
+        app, "urlopen", lambda url, timeout=2: _FakeResp(bare_stats)
+    )
+
+    result = app.collect_claude_usage()
+
+    assert result == {"active": False}
+
+
+def test_collect_claude_usage_returns_last_good_on_transient_failure(monkeypatch):
+    """Once we've seen a successful subscription_window response, a single
+    transient /stats failure (URLError / socket timeout from Headroom chewing
+    on a big proxy request) must not blank the dashboard — return the
+    previously cached payload instead.
+
+    This matches the last-good pattern collect_headroom/rtk/jcodemunch use
+    via _last_good in collect_all, so the Claude Usage card stops flickering
+    to '--' every time Headroom hiccups.
+    """
+    import app
+    from urllib.error import URLError
+
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+
+    # First call succeeds → should populate the last-good cache
+    monkeypatch.setattr(
+        app,
+        "urlopen",
+        lambda url, timeout=2: _FakeResp(_HEADROOM_STATS_WITH_SUBSCRIPTION),
+    )
+    first = app.collect_claude_usage()
+    assert first["active"] is True
+    assert first["session_pct"] == 14.0
+
+    # Second call — Headroom unreachable — must return the cached result,
+    # NOT {"active": False}.
+    def _raise(*args, **kwargs):
+        raise URLError("timed out")
+
+    monkeypatch.setattr(app, "urlopen", _raise)
+    second = app.collect_claude_usage()
+    assert second["active"] is True
+    assert second["session_pct"] == 14.0
+    assert second == first
+
+
+def test_collect_claude_usage_extra_usage_disabled(monkeypatch):
+    """When extra_usage.is_enabled is false, the three extra_usage detail
+    fields must be None (not zero), matching the claude_active=True but
+    extra_usage=off contract that _flatten_snapshot tests already pin."""
+    import app
+    import copy
+
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+
+    payload = copy.deepcopy(_HEADROOM_STATS_WITH_SUBSCRIPTION)
+    payload["subscription_window"]["latest"]["extra_usage"] = {
+        "is_enabled": False,
+        "monthly_limit_usd": 0,
+        "used_credits_usd": 0,
+        "utilization_pct": 0,
+    }
+
+    monkeypatch.setattr(app, "urlopen", lambda url, timeout=2: _FakeResp(payload))
+
+    result = app.collect_claude_usage()
+
+    assert result["active"] is True
+    assert result["extra_usage_enabled"] is False
+    assert result["extra_usage_monthly_limit"] is None
+    assert result["extra_usage_used"] is None
+    assert result["extra_usage_pct"] is None
+    # Other metrics still populated
+    assert result["session_pct"] == 14.0
+
+
+def test_collect_headroom_returns_none_on_urlerror(monkeypatch):
+    """When headroom /stats is unreachable, return None so collect_all falls back
+    to _last_good instead of a stub that would zero out combined_saved and
+    pollute the last-good cache."""
+    import app
+    from urllib.error import URLError
+
+    def _raise(*args, **kwargs):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr(app, "_headroom_version", "1.0.0")
+    monkeypatch.setattr(app, "urlopen", _raise)
+
+    assert app.collect_headroom() is None
+
+
+def test_collect_headroom_returns_none_on_json_error(monkeypatch):
+    """Malformed JSON from headroom should also return None, not a lossy stub."""
+    import app
+
+    class _Resp:
+        def read(self):
+            return b"not-json{"
+
+    monkeypatch.setattr(app, "_headroom_version", "1.0.0")
+    monkeypatch.setattr(app, "urlopen", lambda url, timeout=2: _Resp())
+
+    assert app.collect_headroom() is None
+
+
 def test_same_reset_window_identical_timestamps():
     """Two identical timestamps refer to the same window."""
     import app
@@ -590,3 +980,123 @@ def test_same_reset_window_invalid_format_falls_back_to_string_equality():
     assert app._same_reset_window("not-a-date", "not-a-date") is True
     # Different garbage → False
     assert app._same_reset_window("not-a-date", "other-garbage") is False
+
+
+# --- stale reset-window scrubbing in _flatten_snapshot ---
+#
+# When the Anthropic usage API rate-limits us, collect_claude_usage() keeps
+# serving its last successful response. If the 5-hour session window (or the
+# weekly / sonnet window) has rolled over in the meantime, the cached
+# utilization refers to a dead window and must not be shown to the user.
+# _flatten_snapshot is responsible for scrubbing stale pct/reset pairs so the
+# frontend renders "--" instead of lying with ghost data.
+
+
+def test_flatten_snapshot_drops_stale_session_window():
+    """session_reset in the past → session_pct / session_reset are None,
+    weekly and sonnet untouched."""
+    import app
+    import copy
+
+    snap = copy.deepcopy(FULL_SNAP)
+    snap["claude_usage"]["session_reset"] = "2020-01-01T00:00:00+00:00"
+
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["session_pct"] is None
+    assert flat["session_reset"] is None
+    # Other Claude metrics still pass through
+    assert flat["claude_active"] is True
+    assert flat["weekly_pct"] == 18
+    assert flat["weekly_reset"] == "2099-04-17T15:00:00+00:00"
+    assert flat["sonnet_pct"] == 6
+    assert flat["sonnet_reset"] == "2099-04-17T15:00:00+00:00"
+
+
+def test_flatten_snapshot_drops_stale_sonnet_window():
+    """sonnet_reset in the past → sonnet_pct / sonnet_reset are None,
+    session and weekly untouched."""
+    import app
+    import copy
+
+    snap = copy.deepcopy(FULL_SNAP)
+    snap["claude_usage"]["sonnet_reset"] = "2020-01-01T00:00:00+00:00"
+
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["sonnet_pct"] is None
+    assert flat["sonnet_reset"] is None
+    assert flat["session_pct"] == 42
+    assert flat["weekly_pct"] == 18
+
+
+def test_flatten_snapshot_drops_stale_weekly_window():
+    """weekly_reset in the past → weekly_pct / weekly_reset /
+    weekly_reset_display are all None. The display string is also derived
+    from the same stale cache, so it can't be trusted either."""
+    import app
+    import copy
+
+    snap = copy.deepcopy(FULL_SNAP)
+    snap["claude_usage"]["weekly_reset"] = "2020-01-01T00:00:00+00:00"
+
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["weekly_pct"] is None
+    assert flat["weekly_reset"] is None
+    assert flat["weekly_reset_display"] is None
+    # Other metrics still populated
+    assert flat["session_pct"] == 42
+    assert flat["sonnet_pct"] == 6
+
+
+def test_flatten_snapshot_inactive_claude_passes_through_weekly_reset_display():
+    """When claude_active=False, weekly_reset_display still passes through
+    from snap['weekly']['reset_display'] because it reflects an older
+    successful fetch, not a stale current window. Regression guard against
+    the stale-window scrubbing also killing the inactive-claude path."""
+    import app
+
+    snap = dict(FULL_SNAP)
+    snap["claude_usage"] = {"active": False}
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["claude_active"] is False
+    assert flat["weekly_reset_display"] == "Thu 17 Apr 15:00"
+
+
+# --- reset display formatting (local time) ---
+
+
+def test_format_claude_reset_converts_utc_to_explicit_local_tz():
+    """_format_claude_reset must convert a UTC-aware ISO string to the
+    supplied local timezone before formatting. Prevents the dashboard from
+    showing UTC wall-clock times to the user."""
+    import app
+    from zoneinfo import ZoneInfo
+
+    lisbon = ZoneInfo("Europe/Lisbon")
+    # 2026-04-21T18:00:00 UTC → WEST (UTC+1 in April) → 19:00 local
+    assert (
+        app._format_claude_reset("2026-04-21T18:00:00+00:00", local_tz=lisbon)
+        == "Tue 21 Apr 19:00"
+    )
+
+    nyc = ZoneInfo("America/New_York")
+    # Same UTC instant → EDT (UTC-4 in April) → 14:00 local
+    assert (
+        app._format_claude_reset("2026-04-21T18:00:00+00:00", local_tz=nyc)
+        == "Tue 21 Apr 14:00"
+    )
+
+
+def test_format_claude_reset_handles_empty_and_invalid():
+    """Empty / None / garbage inputs return an empty string instead of
+    raising."""
+    import app
+
+    assert app._format_claude_reset(None) == ""
+    assert app._format_claude_reset("") == ""
+    assert app._format_claude_reset("not-a-timestamp") == ""
+
+

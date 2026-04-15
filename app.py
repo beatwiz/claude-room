@@ -33,17 +33,15 @@ JDOCMUNCH_BIN = os.environ.get("JDOCMUNCH_BIN", "jdocmunch-mcp")
 PORT = int(os.environ.get("PORT", "8095"))
 SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "2"))
 COLLECTOR_INTERVAL = float(os.environ.get("COLLECTOR_INTERVAL", "0.25"))
-CLAUDE_CREDENTIALS = os.environ.get("CLAUDE_CREDENTIALS", os.path.join(HOME, ".claude", ".credentials.json"))
-USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
-USAGE_POLL_INTERVAL = 180  # 3 minutes, same as ccstatusline
-USAGE_BACKOFF = 300  # 5 minutes on 429
 WEEKLY_CACHE_DIR = os.environ.get("WEEKLY_CACHE_DIR", os.path.join(HOME, ".cache", "claude-tools-dashboard"))
 
 # Persistent state for sparklines and fallback
 _last_good = {}
-_usage_cache = None
-_usage_cache_time = 0
-_usage_cache_cred_mtime = 0
+# Last successful claude_usage fetch. Pinned here so that transient Headroom
+# /stats failures (e.g. slow response while Headroom is chewing on a 100k
+# request) don't flash the Claude Usage card to "--" between ticks — we keep
+# showing the previous numbers until a fresh successful fetch arrives.
+_claude_usage_last_good = None
 _sparkline_buffers = {
     "rtk": deque(maxlen=240),
     "headroom": deque(maxlen=240),
@@ -208,6 +206,69 @@ def collect_rtk():
 _headroom_version = None
 
 
+def _system_local_tz():
+    """Return the system's local timezone (honors TZ env var in containers)."""
+    return datetime.now().astimezone().tzinfo
+
+
+# Headroom emits some timestamps as naive ISO strings (no tz suffix) even
+# though they represent local wall time where the headroom process is running.
+# We interpret them in this timezone and convert to explicit UTC so the
+# dashboard's string-based sort is chronologically correct and the client
+# can display them consistently. Falls back to system local (TZ env var).
+_HEADROOM_ASSUMED_TZ = _system_local_tz()
+
+
+def _normalize_iso_ts(ts, assumed_tz):
+    """Return `ts` as an explicit-UTC ISO string.
+
+    - Already has tzinfo → converted to UTC, offset re-emitted as `+00:00`.
+    - Naive → treated as wall-clock in `assumed_tz`, then converted to UTC.
+    - Unparseable or empty → returned unchanged.
+    """
+    if not ts:
+        return ts
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return ts
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=assumed_tz)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _format_headroom_recent_requests(entries):
+    """Convert proxy request logs into dashboard feed rows."""
+    history = []
+    for entry in entries or []:
+        model = entry.get("model") or "unknown"
+        original = int(entry.get("input_tokens_original") or 0)
+        optimized = int(entry.get("input_tokens_optimized") or 0)
+        saved_tokens = int(entry.get("tokens_saved") or 0)
+        saved_pct = round(entry.get("savings_percent") or 0, 1)
+
+        if model.startswith("passthrough:"):
+            cmd = model.replace("passthrough:", "", 1) + " passthrough"
+        elif original > 0 and optimized > 0 and original != optimized:
+            cmd = f"{model} {original:,} -> {optimized:,} tokens"
+        elif original > 0:
+            cmd = f"{model} {original:,} input tokens"
+        else:
+            cmd = f"{model} request"
+
+        raw_ts = entry.get("timestamp")
+        ts = _normalize_iso_ts(raw_ts, _HEADROOM_ASSUMED_TZ) if raw_ts else datetime.now(timezone.utc).isoformat()
+
+        history.append({
+            "time": ts,
+            "tool": "headroom",
+            "cmd": cmd,
+            "saved_tokens": saved_tokens,
+            "saved_pct": saved_pct,
+        })
+    return history
+
+
 def collect_headroom():
     """Check headroom proxy stats endpoint."""
     try:
@@ -236,6 +297,7 @@ def collect_headroom():
             req_stats = raw.get("requests") or {}
             latency = raw.get("latency") or {}
             prefix_totals = ((raw.get("prefix_cache") or {}).get("totals") or {})
+            recent_requests = raw.get("recent_requests") or []
 
             total_saved = tokens_section.get("saved") or 0
             avg_pct = round(tokens_section.get("savings_percent") or 0, 1)
@@ -258,6 +320,16 @@ def collect_headroom():
                 _headroom_history = _headroom_history[-100:]
             _headroom_last_total = total_saved
 
+            # Prefer our own _headroom_history (built from delta-on-total_saved
+            # every tick, so it captures every compression event). Fall back to
+            # recent_requests only when we haven't accumulated our own history
+            # yet -- upstream's recent_requests is a tiny ring buffer that can
+            # go stale for long stretches while activity keeps flowing.
+            if _headroom_history:
+                history = list(_headroom_history)
+            else:
+                history = _format_headroom_recent_requests(recent_requests)
+
             return {
                 "active": True,
                 "version": version,
@@ -272,13 +344,14 @@ def collect_headroom():
                 "requests_total": req_stats.get("total") or 0,
                 "requests_failed": req_stats.get("failed") or 0,
                 "avg_latency_ms": round(latency.get("average_ms") or 0, 1),
-                "history": list(_headroom_history),
+                "history": history,
             }
         except (URLError, OSError, json.JSONDecodeError):
-            return {
-                "active": False,
-                "version": version,
-            }
+            # Return None so collect_all() falls back to _last_good instead of
+            # overwriting it with a stub that lacks total_saved/lifetime_saved.
+            # A stub would drop headroom's contribution from combined_saved on
+            # every transient error, making this_week flap negative.
+            return None
     except Exception:
         return None
 
@@ -452,81 +525,62 @@ def collect_jdocmunch():
         return None
 
 
-def _read_oauth_token():
-    """Read Claude Code OAuth access token from credentials file."""
-    try:
-        with open(CLAUDE_CREDENTIALS) as f:
-            creds = json.load(f)
-        return creds.get("claudeAiOauth", {}).get("accessToken")
-    except Exception:
-        return None
-
-
 def collect_claude_usage():
-    """Fetch Claude usage from Anthropic API with a 3-minute cache.
+    """Pull Claude subscription window values from Headroom's /stats endpoint.
 
-    The cache is also invalidated as soon as the credentials file mtime
-    advances, so an external refresher writing a new token is picked up
-    on the next collector tick (~0.25s) instead of waiting up to 3 min.
+    Headroom already polls https://api.anthropic.com/api/oauth/usage on a
+    sane cadence and caches the result under subscription_window.latest in
+    /stats. We piggyback on its cache instead of hitting Anthropic directly,
+    which means (a) no OAuth token handling here, (b) no per-token rate
+    limit to dodge, (c) one source of truth for "what does Anthropic think
+    my usage is right now".
+
+    On transient failure (URLError/timeout/bad JSON/missing subscription_window)
+    returns the last successful payload instead of {"active": False} — this
+    prevents the Claude Usage card from flashing to "--" between ticks when
+    Headroom is temporarily slow. Cold start with no prior success falls back
+    to {"active": False}.
+
+    Returns the contract shape _flatten_snapshot expects:
+    session_pct / session_reset / weekly_pct / weekly_reset /
+    sonnet_pct / sonnet_reset / extra_usage_* / active.
     """
-    global _usage_cache, _usage_cache_time, _usage_cache_cred_mtime
-
-    now = time.time()
-    try:
-        cred_mtime = os.path.getmtime(CLAUDE_CREDENTIALS)
-    except OSError:
-        cred_mtime = 0
-
-    cache_fresh = (
-        _usage_cache
-        and (now - _usage_cache_time) < USAGE_POLL_INTERVAL
-        and cred_mtime <= _usage_cache_cred_mtime
-    )
-    if cache_fresh:
-        return _usage_cache
-
-    token = _read_oauth_token()
-    if not token:
-        return _usage_cache  # return stale cache or None
+    global _claude_usage_last_good
 
     try:
-        req = Request(USAGE_API_URL)
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("anthropic-beta", "oauth-2025-04-20")
-        req.add_header("Content-Type", "application/json")
-        with urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
+        resp = urlopen(f"{HEADROOM_URL}/stats", timeout=3)
+        raw = json.loads(resp.read())
+    except (URLError, OSError, json.JSONDecodeError):
+        return _claude_usage_last_good or {"active": False}
 
-        five = data.get("five_hour") or {}
-        seven = data.get("seven_day") or {}
-        sonnet = data.get("seven_day_sonnet") or {}
-        extra = data.get("extra_usage") or {}
-        extra_enabled = bool(extra.get("is_enabled"))
+    latest = (raw.get("subscription_window") or {}).get("latest") or {}
+    if not latest:
+        return _claude_usage_last_good or {"active": False}
 
-        result = {
-            "session_pct": five.get("utilization"),
-            "session_reset": five.get("resets_at"),
-            "weekly_pct": seven.get("utilization"),
-            "weekly_reset": seven.get("resets_at"),
-            "sonnet_pct": sonnet.get("utilization"),
-            "sonnet_reset": sonnet.get("resets_at"),
-            "extra_usage_enabled": extra_enabled,
-            "extra_usage_monthly_limit": extra.get("monthly_limit") if extra_enabled else None,
-            "extra_usage_used": extra.get("used_credits") if extra_enabled else None,
-            "extra_usage_pct": extra.get("utilization") if extra_enabled else None,
-            "active": True,
-        }
-        _usage_cache = result
-        _usage_cache_time = now
-        _usage_cache_cred_mtime = cred_mtime
-        return result
-    except HTTPError as e:
-        if e.code == 429:
-            # Back off on rate limit -- extend cache validity
-            _usage_cache_time = now - USAGE_POLL_INTERVAL + USAGE_BACKOFF
-        return _usage_cache
-    except Exception:
-        return _usage_cache
+    five = latest.get("five_hour") or {}
+    seven = latest.get("seven_day") or {}
+    sonnet = latest.get("seven_day_sonnet") or {}
+    extra = latest.get("extra_usage") or {}
+    extra_enabled = bool(extra.get("is_enabled"))
+
+    result = {
+        "active": True,
+        "session_pct": five.get("utilization_pct"),
+        "session_reset": five.get("resets_at"),
+        "weekly_pct": seven.get("utilization_pct"),
+        "weekly_reset": seven.get("resets_at"),
+        "sonnet_pct": sonnet.get("utilization_pct"),
+        "sonnet_reset": sonnet.get("resets_at"),
+        "extra_usage_enabled": extra_enabled,
+        # Units are USD (used_credits_usd / monthly_limit_usd). Previously
+        # when we hit Anthropic direct these were in cents; the frontend's
+        # extra_usage card formats them as dollars now.
+        "extra_usage_monthly_limit": extra.get("monthly_limit_usd") if extra_enabled else None,
+        "extra_usage_used": extra.get("used_credits_usd") if extra_enabled else None,
+        "extra_usage_pct": extra.get("utilization_pct") if extra_enabled else None,
+    }
+    _claude_usage_last_good = result
+    return result
 
 
 WEEKLY_CACHE_SCHEMA_VERSION = 2
@@ -638,6 +692,47 @@ def _group_history(entries):
     return grouped
 
 
+def _reset_in_future(iso_ts):
+    """True iff `iso_ts` is a parseable ISO-8601 timestamp strictly in the future.
+
+    Used by _flatten_snapshot to decide whether a cached pct/reset pair still
+    refers to a live reset window. When the Anthropic usage endpoint is rate
+    limited, collect_claude_usage() serves its last successful response
+    indefinitely — but once the reset time has passed, the utilization value
+    refers to a dead window and must be scrubbed before it reaches the UI.
+    """
+    if not iso_ts:
+        return False
+    try:
+        return datetime.fromisoformat(iso_ts) > datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        return False
+
+
+def _format_claude_reset(iso_ts, local_tz=None):
+    """Render an ISO-8601 reset timestamp as a local-time display string.
+
+    Anthropic returns UTC-aware ISO strings. The dashboard must display them
+    in the user's local timezone, otherwise "Tue 18:00 UTC" looks like a
+    different wall-clock time than the official "Tue 7:00 PM" on claude.ai.
+
+    `local_tz` defaults to None, which uses the process's system local tz
+    (honors the TZ env var in containers). Tests can pass an explicit
+    zoneinfo.ZoneInfo to avoid depending on host tz configuration.
+    """
+    if not iso_ts:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_ts)
+        if local_tz is not None:
+            dt = dt.astimezone(local_tz)
+        else:
+            dt = dt.astimezone()
+        return dt.strftime("%a %-d %b %H:%M")
+    except (ValueError, TypeError):
+        return ""
+
+
 def _same_reset_window(a, b, tolerance_seconds=5):
     """Return True iff two ISO-8601 resets_at timestamps refer to the same reset window.
 
@@ -690,6 +785,15 @@ def _flatten_snapshot(snap):
     spark_jdm = sparklines.get("jdocmunch") or {}
 
     claude_active = bool(claude.get("active"))
+    # A cached pct only makes sense while its reset window is still in the
+    # future. Once the window rolls over, the cached utilization refers to
+    # a dead window and must be scrubbed — otherwise a rate-limited backend
+    # keeps showing ghost percentages (e.g. 20% from a 5-hour session that
+    # already reset two hours ago).
+    session_valid = claude_active and _reset_in_future(claude.get("session_reset"))
+    weekly_valid = claude_active and _reset_in_future(claude.get("weekly_reset"))
+    sonnet_valid = claude_active and _reset_in_future(claude.get("sonnet_reset"))
+
     def _claude(key):
         return claude.get(key) if claude_active else None
 
@@ -714,13 +818,21 @@ def _flatten_snapshot(snap):
         "timestamp": snap.get("timestamp"),
 
         "claude_active": claude_active,
-        "session_pct": _claude("session_pct"),
-        "session_reset": _claude("session_reset"),
-        "weekly_pct": _claude("weekly_pct"),
-        "weekly_reset": _claude("weekly_reset"),
-        "weekly_reset_display": weekly.get("reset_display") or None,
-        "sonnet_pct": _claude("sonnet_pct"),
-        "sonnet_reset": _claude("sonnet_reset"),
+        "session_pct": _claude("session_pct") if session_valid else None,
+        "session_reset": _claude("session_reset") if session_valid else None,
+        "weekly_pct": _claude("weekly_pct") if weekly_valid else None,
+        "weekly_reset": _claude("weekly_reset") if weekly_valid else None,
+        # weekly_reset_display is derived from the same stale cache as
+        # weekly_reset, so scrub it alongside weekly when the window is dead.
+        # When claude_active is False, the display string reflects an earlier
+        # successful fetch and is still the best info we have — pass it through.
+        "weekly_reset_display": (
+            None
+            if (claude_active and not weekly_valid)
+            else (weekly.get("reset_display") or None)
+        ),
+        "sonnet_pct": _claude("sonnet_pct") if sonnet_valid else None,
+        "sonnet_reset": _claude("sonnet_reset") if sonnet_valid else None,
 
         "combined_saved": snap.get("combined_saved", 0),
         "combined_saved_usd": combined_saved_usd,
@@ -870,14 +982,10 @@ def collect_all():
         except (ValueError, TypeError):
             pass
 
-    # Format reset display: "Thu 3 Apr 15:00"
-    reset_display = ""
-    if claude_usage and claude_usage.get("weekly_reset"):
-        try:
-            reset_dt = datetime.fromisoformat(claude_usage["weekly_reset"])
-            reset_display = reset_dt.strftime("%a %-d %b %H:%M")
-        except (ValueError, TypeError):
-            reset_display = ""
+    # Format reset display in the user's local timezone (e.g. "Thu 3 Apr 15:00")
+    reset_display = _format_claude_reset(
+        claude_usage.get("weekly_reset") if claude_usage else None
+    )
 
     # Update sparkline buffers with cumulative totals
     now = time.time()
@@ -1552,7 +1660,18 @@ function formatTime(ms) {
 
 function shortTime(t) {
     if (!t) return '';
-    // ISO: 2026-03-28T22:40:32.029588405+00:00 -> 22:40:32
+    // Parse as Date so explicit-UTC timestamps (rtk: +00:00) convert to the
+    // browser's local time. Naive date-time strings parse as local per
+    // ECMAScript, which matches the server-side normalizer that emits
+    // headroom's timestamps with explicit UTC offsets.
+    var d = new Date(t);
+    if (!isNaN(d.getTime())) {
+        var h = d.getHours(), mi = d.getMinutes(), s = d.getSeconds();
+        return (h < 10 ? '0' : '') + h + ':' +
+               (mi < 10 ? '0' : '') + mi + ':' +
+               (s < 10 ? '0' : '') + s;
+    }
+    // Fallback: extract HH:MM:SS for inputs we couldn't parse.
     var m = t.match(/T?(\\d{2}:\\d{2}:\\d{2})/);
     if (m) return m[1];
     return t.length > 8 ? t.substring(0, 8) : t;
@@ -1674,7 +1793,7 @@ function updateDashboard(d) {
         var used = cu.extra_usage_used;
         var limit = cu.extra_usage_monthly_limit;
         if (used != null && limit != null) {
-            extraDetail.textContent = used.toLocaleString() + ' of ' + limit.toLocaleString() + ' credits';
+            extraDetail.textContent = '$' + used.toFixed(2) + ' / $' + limit.toFixed(2);
         } else {
             extraDetail.textContent = 'active';
         }

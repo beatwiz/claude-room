@@ -16,7 +16,7 @@ Live wallboard for monitoring token savings across your Claude Code toolchain. T
 - **jCodeMunch** -- indexed repos and session savings (filesystem + MCP)
 - **jDocMunch** -- documentation indexing and section retrieval savings (filesystem)
 - **Combined total** with sparkline trends and live activity feed
-- **Stats ticker** -- weekly savings breakdown, daily burn rate, Claude usage percentages (5-hour, weekly, Sonnet), and reset countdown (reads Claude Code credentials directly, no extra tools needed)
+- **Stats ticker** -- weekly savings breakdown, daily burn rate, Claude usage percentages (5-hour, weekly, Sonnet), and reset countdown (sourced from Headroom's `subscription_window` stats -- no Claude credentials needed)
 
 ## Quick start
 
@@ -38,7 +38,6 @@ docker run -d --name claude-tools-dashboard \
   -v ~/.local/share/rtk:/root/.local/share/rtk:ro \
   -v ~/.code-index:/root/.code-index:ro \
   -v ~/.doc-index:/root/.doc-index:ro \
-  -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
   --network host \
   willluck/claude-tools-dashboard
 
@@ -55,12 +54,11 @@ docker run -d --name claude-tools-dashboard \
   -v ~/.local/share/rtk:/root/.local/share/rtk:ro \
   -v ~/.code-index:/root/.code-index:ro \
   -v ~/.doc-index:/root/.doc-index:ro \
-  -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
   --network host \
   claude-tools-dashboard
 ```
 
-Use `--network host` so the container can reach the Headroom proxy on localhost. Alternatively, set `HEADROOM_URL` to point at the host IP. The credentials mount is optional -- without it, the usage ticker just shows dashes.
+Use `--network host` so the container can reach the Headroom proxy on localhost. Alternatively, set `HEADROOM_URL` to point at the host IP. Claude usage data (5-hour / weekly / Sonnet percentages and reset countdown) is pulled from Headroom's `/stats` endpoint -- no Claude credentials mount required.
 
 ## Configuration
 
@@ -76,7 +74,6 @@ All settings via environment variables. Copy `.env.example` for reference:
 | `JDOCMUNCH_INDEX_DIR` | `~/.doc-index` | jDocMunch index directory |
 | `JCODEMUNCH_BIN` | `jcodemunch-mcp` | Path to jCodeMunch binary |
 | `SSE_INTERVAL` | `30` | Seconds between SSE pushes |
-| `CLAUDE_CREDENTIALS` | `~/.claude/.credentials.json` | Claude Code credentials (for usage API) |
 | `WEEKLY_CACHE_DIR` | `~/.cache/claude-tools-dashboard` | Weekly savings snapshot directory |
 
 ## API
