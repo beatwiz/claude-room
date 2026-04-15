@@ -1153,6 +1153,7 @@ body {
     color: #aaa;
 }
 .cards .card-usage .usage-row .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.cards .card-usage .usage-row .label.sub { color: #555; padding-left: 10px; }
 .cards .card-usage .usage-row .val { color: #fff; font-weight: 600; font-size: 12px; }
 .cards .card-usage .usage-row .val.pct-green { color: #00ff88; }
 .cards .card-usage .usage-row .val.pct-yellow { color: #ffcc00; }
@@ -1377,9 +1378,10 @@ body {
         </div>
         <div id="summary-usage-claude">
             <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
+            <div class="usage-row"><span class="label sub">Reset</span><span class="val val-time" id="summary-session-reset">--</span></div>
             <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
+            <div class="usage-row"><span class="label sub">Reset</span><span class="val val-time" id="summary-weekly-reset">--</span></div>
             <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
-            <div class="usage-row"><span class="label">Reset</span><span class="val val-time" id="summary-claude-reset">--</span></div>
         </div>
         <div id="summary-usage-extra" style="display:none;">
             <div class="card-value dim" id="summary-extra-value">n/a</div>
@@ -1404,6 +1406,21 @@ function formatTokens(n, withUnit) {
     if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
     if (withUnit) return n + ' tokens';
     return String(n);
+}
+
+function formatRemaining(isoTs) {
+    if (!isoTs) return '--';
+    var target = Date.parse(isoTs);
+    if (isNaN(target)) return '--';
+    var diffMs = target - Date.now();
+    if (diffMs <= 0) return 'now';
+    var totalMin = Math.floor(diffMs / 60000);
+    var days = Math.floor(totalMin / 1440);
+    var hours = Math.floor((totalMin % 1440) / 60);
+    var mins = totalMin % 60;
+    if (days > 0) return days + 'd ' + hours + 'h';
+    if (hours > 0) return hours + 'h ' + mins + 'm';
+    return mins + 'm';
 }
 
 function formatTime(ms) {
@@ -1563,7 +1580,8 @@ function updateDashboard(d) {
     applyPctField(document.getElementById('summary-session-pct'), cu.active ? cu.session_pct : null);
     applyPctField(document.getElementById('summary-weekly-pct'), cu.active ? cu.weekly_pct : null);
     applyPctField(document.getElementById('summary-sonnet-pct'), cu.active ? cu.sonnet_pct : null);
-    document.getElementById('summary-claude-reset').textContent = w.reset_display || '--';
+    document.getElementById('summary-session-reset').textContent = cu.active ? formatRemaining(cu.session_reset) : '--';
+    document.getElementById('summary-weekly-reset').textContent = cu.active ? formatRemaining(cu.weekly_reset) : '--';
 
     // Extra sub-view
     var extraEnabled = !!(cu.active && cu.extra_usage_enabled);
