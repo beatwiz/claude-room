@@ -1,4 +1,4 @@
-"""Claude Tools Dashboard -- Flask backend with SSE streaming."""
+"""Claude Room Dashboard -- Flask backend with SSE streaming."""
 
 import json
 import os
@@ -967,7 +967,7 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Tools Dashboard</title>
+<title>Claude Room Dashboard</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1291,9 +1291,9 @@ body {
 <!-- Header -->
 <div class="header">
     <a class="header-left" href="https://github.com/Will-Luck/claude-tools-dashboard" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
-        <div class="header-title">CLAUDE TOOLS</div>
+        <div class="header-title">CLAUDE ROOM</div>
     </a>
-    <div class="header-right" id="clock">--:--:-- &blacksquare; -- --- ----</div>
+    <div class="header-right">DASHBOARD</div>
 </div>
 
 <!-- Cards -->
@@ -1698,20 +1698,6 @@ function escHtml(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Clock
-function updateClock() {
-    var now = new Date();
-    var h = String(now.getHours()).padStart(2, '0');
-    var m = String(now.getMinutes()).padStart(2, '0');
-    var s = String(now.getSeconds()).padStart(2, '0');
-    var months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-    var day = String(now.getDate()).padStart(2, '0');
-    var mon = months[now.getMonth()];
-    var yr = now.getFullYear();
-    document.getElementById('clock').textContent = h + ':' + m + ':' + s + ' \u25aa ' + day + ' ' + mon + ' ' + yr;
-}
-setInterval(updateClock, 1000);
-updateClock();
 wireUsageToggle();
 
 // SSE
