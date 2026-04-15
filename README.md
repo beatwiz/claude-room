@@ -1,107 +1,85 @@
-# Claude Tools Dashboard
+# Claude Room
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Docker Hub](https://img.shields.io/docker/v/willluck/claude-tools-dashboard?logo=docker&logoColor=white&label=Docker%20Hub)](https://hub.docker.com/r/willluck/claude-tools-dashboard)
-[![GHCR](https://img.shields.io/badge/ghcr.io-available-2496ed?logo=github&logoColor=white)](https://ghcr.io/will-luck/claude-tools-dashboard)
 
-Live wallboard for monitoring token savings across your Claude Code toolchain — RTK and Headroom.
+Live wallboard for Claude Code token savings and subscription usage. Aggregates [RTK](https://github.com/Will-Luck/rtk) (CLI proxy) and [Headroom](https://github.com/chopratejas/headroom) (compression proxy) into a single-screen view with sparklines, weekly burn rate, and your Anthropic 5-hour / weekly / Sonnet usage percentages.
 
 ![Dashboard](screenshots/dashboard-full.png)
 
 ## What it shows
 
-- **RTK** -- command-level token savings from the CLI proxy (SQLite)
-- **Headroom** -- context compression stats from the MCP server (HTTP API)
-- **Combined total** with sparkline trends and live activity feed
-- **Stats ticker** -- weekly savings breakdown, daily burn rate, Claude usage percentages (5-hour, weekly, Sonnet), and reset countdown (sourced from Headroom's `subscription_window` stats -- no Claude credentials needed)
+- **RTK** — command-level token savings from the CLI proxy (SQLite)
+- **Headroom** — context compression stats from the MCP server (`/stats` HTTP API)
+- **Combined** — combined savings with sparkline, this-week delta, and daily burn rate
+- **Usage** — Claude 5-hour / weekly / Sonnet utilization + next reset, sourced from Headroom's `subscription_window.latest` (no Anthropic credentials required)
+- **Activity feed** — live stream of compression events and RTK commands
 
 ## Quick start
 
+### Local
+
 ```bash
-# Clone and run locally
-git clone https://github.com/Will-Luck/claude-tools-dashboard.git
-cd claude-tools-dashboard
+git clone https://github.com/beatwiz/claude-room.git
+cd claude-room
 pip install -r requirements.txt
 python app.py
-# Open http://localhost:8095
-```
-
-### Docker (pre-built)
-
-```bash
-# Docker Hub
-docker run -d --name claude-tools-dashboard \
-  -p 8095:8095 \
-  -v ~/.local/share/rtk:/root/.local/share/rtk:ro \
-  -v ~/.code-index:/root/.code-index:ro \
-  -v ~/.doc-index:/root/.doc-index:ro \
-  --network host \
-  willluck/claude-tools-dashboard
-
-# Or from GHCR
-docker run -d ... ghcr.io/will-luck/claude-tools-dashboard
+# http://localhost:8095
 ```
 
 ### Docker (build from source)
 
 ```bash
-docker build -t claude-tools-dashboard .
-docker run -d --name claude-tools-dashboard \
-  -p 8095:8095 \
-  -v ~/.local/share/rtk:/root/.local/share/rtk:ro \
-  -v ~/.code-index:/root/.code-index:ro \
-  -v ~/.doc-index:/root/.doc-index:ro \
-  --network host \
-  claude-tools-dashboard
+./build.sh
+# http://localhost:8095
 ```
 
-Use `--network host` so the container can reach the Headroom proxy on localhost. Alternatively, set `HEADROOM_URL` to point at the host IP. Claude usage data (5-hour / weekly / Sonnet percentages and reset countdown) is pulled from Headroom's `/stats` endpoint -- no Claude credentials mount required.
+`build.sh` rebuilds the image, replaces the container, mounts your RTK SQLite DB, and pipes your host `rtk --version` into the container so the card displays the right version. Override via env: `PORT`, `IMAGE`, `CONTAINER`, `DOCKER_NETWORK`, `HEADROOM_URL`, `TZ`.
+
+Headroom must be reachable from the container — the default `HEADROOM_URL=http://host.docker.internal:8787` works on Docker Desktop. On Linux, either use `--network host` or point `HEADROOM_URL` at your host IP.
 
 ## Configuration
 
-All settings via environment variables. Copy `.env.example` for reference:
+All settings via environment variables. See `.env.example` for the full list.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8095` | Dashboard listen port |
-| `HEADROOM_URL` | `http://127.0.0.1:8787` | Headroom proxy stats endpoint |
+| `HEADROOM_URL` | `http://127.0.0.1:8787` | Headroom proxy base URL (`/stats`, `/health`) |
 | `RTK_DB_PATH` | `~/.local/share/rtk/history.db` | RTK SQLite database |
-| `RTK_BIN` | `rtk` | Path to RTK binary |
-| `SSE_INTERVAL` | `30` | Seconds between SSE pushes |
+| `RTK_BIN` | `rtk` | RTK binary name or path |
+| `RTK_VERSION` | _(auto)_ | Override RTK version string (used in containers) |
+| `COLLECTOR_INTERVAL` | `0.25` | Seconds between background collector ticks |
+| `SSE_INTERVAL` | `2` | Seconds between SSE pushes to connected clients |
 | `WEEKLY_CACHE_DIR` | `~/.cache/claude-tools-dashboard` | Weekly savings snapshot directory |
+| `TZ` | _(system)_ | Timezone for reset-countdown rendering |
 
 ## API
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /` | Dashboard HTML (self-contained SPA) |
-| `GET /health` | JSON health check |
-| `GET /events` | SSE stream (auto-reconnects) |
+| `GET /` | Dashboard HTML (self-contained SPA, no build step) |
+| `GET /health` | JSON liveness check |
+| `GET /api/status` | One-shot snapshot of the current aggregated state |
+| `GET /events` | SSE stream, pushed every `SSE_INTERVAL` seconds |
 
 ## Architecture
 
-Single-file Flask app (`app.py`) that:
+Single-file Flask app (`app.py`) with no frontend build step:
 
-1. Polls RTK's SQLite database for command history and savings
-2. Queries Headroom's HTTP stats API for compression data
-3. Pushes aggregated state to connected browsers via SSE
-5. Serves a self-contained HTML/CSS/JS dashboard (no build step)
-
-The frontend uses vanilla JS with CSS custom properties for theming. Sparkline charts are drawn with inline SVG. No external dependencies beyond Flask.
+1. A background collector ticks every `COLLECTOR_INTERVAL` seconds, hitting RTK's SQLite DB and Headroom's `/stats` endpoint. Both calls share one `/stats` fetch per tick.
+2. Per-tick snapshots update sparkline buffers and a weekly baseline stored in `WEEKLY_CACHE_DIR/weekly.json`. The cache is fingerprinted with the current `combined_saved` formula and auto-invalidates when the formula changes.
+3. Claude subscription usage is parsed from `subscription_window.latest` in the same `/stats` payload — no Anthropic OAuth handling, no credential mount.
+4. The latest snapshot is pushed to connected browsers over SSE; the frontend is vanilla JS + inline SVG sparklines.
 
 ## Tests
-
-Install dev dependencies and run pytest from the repo root:
 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
-The test suite covers the `_flatten_snapshot` helper contract and the
-`GET /api/status` route. It does not exercise the individual
-`collect_*` functions or the background collector thread.
+The suite covers the collector fallback paths, weekly-cache schema migrations, the `_flatten_snapshot` helper, and the `/api/status` route contract. Background collector and SSE streaming are not covered.
 
 ## License
 
