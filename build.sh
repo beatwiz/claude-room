@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh -- rebuild and (re)launch the claude-tools-dashboard container.
+# build.sh -- rebuild and (re)launch the claude-room-dashboard container.
 #
 # Replaces the old `cct` shell function. No more ~/.claude credentials
 # mount: Claude subscription values now come from Headroom's /stats
@@ -49,5 +49,11 @@ docker run -d \
     -v "$HOME/Library/Application Support/rtk:/root/.local/share/rtk" \
     -v "$HOME/.cache/claude-tools-dashboard:/root/.cache/claude-tools-dashboard" \
     "$IMAGE" >/dev/null
+
+# Prune dangling images left behind by previous rebuilds of this tag.
+# `docker build -t IMAGE` re-tags to the new layer set, so the prior
+# image becomes dangling (no tag). Without this, every rebuild adds
+# ~150MB of dead layers.
+docker image prune -f >/dev/null 2>&1 || true
 
 echo "build.sh: http://127.0.0.1:$PORT"
