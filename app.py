@@ -456,7 +456,7 @@ def collect_claude_usage(stats_raw=None):
     return result
 
 
-WEEKLY_CACHE_SCHEMA_VERSION = 3
+WEEKLY_CACHE_SCHEMA_VERSION = 4
 
 # Fingerprint of the combined_saved formula used when a baseline is written.
 # Stored inside weekly.json so _load_weekly_cache can detect any future change
@@ -471,15 +471,13 @@ COMBINED_SAVED_DEFINITION = (
 def _load_weekly_cache():
     """Load weekly savings snapshot from disk.
 
-    Pre-v2: dropped (baseline was written against the old total_saved-based
-    combined_saved definition, incomparable to the current lifetime_saved
-    formula).
+    Pre-v4: dropped. v2 and v3 baselines were written when combined_saved
+    still included jcodemunch + jdocmunch totals; this branch removed both
+    tools from the formula, so their baselines now overstate the starting
+    point and would produce negative / understated this_week_saved until
+    the next reset window.
 
-    v2: the formula matches v3, so migrate in place — preserve the baseline,
-    stamp the schema version and definition fingerprint forward so the user
-    does not lose their weekly progress on upgrade.
-
-    v3+: require an exact combined_saved_definition match. A mismatch means
+    v4+: require an exact combined_saved_definition match. A mismatch means
     the formula changed without a schema bump (or the definition constant
     was edited); drop the cache so collect_all re-seeds a fresh baseline.
     """
@@ -491,15 +489,8 @@ def _load_weekly_cache():
         return {}
 
     ver = data.get("schema_version", 1)
-    if ver < 2:
+    if ver < WEEKLY_CACHE_SCHEMA_VERSION:
         return {}
-    if ver == 2:
-        # Persist the migration so subsequent loads hit the fast path
-        # (v3+ exact-match branch) instead of re-migrating every tick.
-        data["schema_version"] = WEEKLY_CACHE_SCHEMA_VERSION
-        data["combined_saved_definition"] = COMBINED_SAVED_DEFINITION
-        _save_weekly_cache(data)
-        return data
     if data.get("combined_saved_definition") != COMBINED_SAVED_DEFINITION:
         return {}
     return data

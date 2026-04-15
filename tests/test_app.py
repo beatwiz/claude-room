@@ -1321,44 +1321,34 @@ def test_sparkline_buffer_uses_lifetime_saved_for_headroom(monkeypatch, tmp_path
 
 
 # ---------------------------------------------------------------------------
-# Codex P1: weekly cache must drop baselines computed against a stale
-# combined_saved formula, but preserve v2 baselines (which were written
-# against the same formula v3 uses).
+# Codex P1: weekly cache must drop baselines written under a stale
+# combined_saved formula. v2 and v3 both included jcodemunch/jdocmunch
+# totals; this branch removed them, so pre-v4 baselines overstate the
+# starting point and must be invalidated to force a fresh re-seed.
 # ---------------------------------------------------------------------------
 
 
-def test_weekly_cache_v2_is_migrated_in_place_to_v3(tmp_path, monkeypatch):
-    """v2 baselines were written against the same combined_saved formula that
-    v3 uses, so migrate in place and preserve the user's weekly progress.
-    The cache is stamped with the current formula fingerprint on load so
-    future schema checks can verify it."""
+def test_weekly_cache_pre_v4_baselines_are_dropped(tmp_path, monkeypatch):
+    """v2 and v3 baselines were written when combined_saved still included
+    jcodemunch + jdocmunch, so their baselines are incomparable to the
+    current lifetime_saved + rtk-only formula. Load must return {} so
+    collect_all re-seeds from the current combined_saved value."""
     import app
     import json as _json
 
     cache_dir = tmp_path / "dash"
     cache_dir.mkdir()
     cache_path = cache_dir / "weekly.json"
-    cache_path.write_text(_json.dumps({
-        "current_week_baseline": 14847609,
-        "current_week_start": "2026-04-14T18:30:05+00:00",
-        "weekly_reset_at": "2026-04-21T18:00:00+00:00",
-        "last_week_savings": 0,
-        "schema_version": 2,
-    }))
     monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(cache_dir))
 
-    loaded = app._load_weekly_cache()
-
-    assert loaded["current_week_baseline"] == 14847609  # preserved
-    assert loaded["schema_version"] == app.WEEKLY_CACHE_SCHEMA_VERSION  # stamped forward
-    assert loaded["combined_saved_definition"] == app.COMBINED_SAVED_DEFINITION
-
-    # Migration must persist to disk so subsequent loads hit the fast
-    # v3+ path instead of re-migrating every tick.
-    on_disk = _json.loads(cache_path.read_text())
-    assert on_disk["schema_version"] == app.WEEKLY_CACHE_SCHEMA_VERSION
-    assert on_disk["combined_saved_definition"] == app.COMBINED_SAVED_DEFINITION
-    assert on_disk["current_week_baseline"] == 14847609
+    for stale_version in (2, 3):
+        cache_path.write_text(_json.dumps({
+            "current_week_baseline": 14847609,
+            "current_week_start": "2026-04-14T18:30:05+00:00",
+            "weekly_reset_at": "2026-04-21T18:00:00+00:00",
+            "schema_version": stale_version,
+        }))
+        assert app._load_weekly_cache() == {}
 
 
 def test_weekly_cache_drops_mismatched_definition_fingerprint(tmp_path, monkeypatch):
@@ -1373,7 +1363,7 @@ def test_weekly_cache_drops_mismatched_definition_fingerprint(tmp_path, monkeypa
     cache_path = cache_dir / "weekly.json"
     cache_path.write_text(_json.dumps({
         "current_week_baseline": 42,
-        "schema_version": 3,
+        "schema_version": app.WEEKLY_CACHE_SCHEMA_VERSION,
         "combined_saved_definition": "old-formula-that-no-longer-exists",
     }))
     monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(cache_dir))
