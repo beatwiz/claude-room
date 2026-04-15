@@ -1115,9 +1115,11 @@ body {
 .cards .card-combined .card-sub-usd { color: #5cc48a; font-size: 12px; margin-top: 2px; }
 .cards .card-combined .combined-body {
     display: flex;
-    flex-direction: column;
-    gap: 14px;
+    align-items: center;
+    gap: 20px;
 }
+.cards .card-combined .combined-body > div:first-child { flex: 0 0 auto; }
+.cards .card-combined .combined-stats { flex: 1 1 0; min-width: 0; }
 .cards .card-combined .combined-stats {
     display: flex;
     flex-direction: column;
