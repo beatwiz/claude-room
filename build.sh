@@ -46,6 +46,7 @@ docker run -d \
     --network "$NETWORK" \
     --restart unless-stopped \
     -p "$PORT:$PORT" \
+    -e PORT="$PORT" \
     -e HEADROOM_URL="$HEADROOM_URL" \
     -e TZ="$TZ_VALUE" \
     -e RTK_VERSION="$rtk_v" \

@@ -35,6 +35,18 @@ SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "2"))
 COLLECTOR_INTERVAL = float(os.environ.get("COLLECTOR_INTERVAL", "0.25"))
 WEEKLY_CACHE_DIR = os.environ.get("WEEKLY_CACHE_DIR", os.path.join(HOME, ".cache", "claude-tools-dashboard"))
 
+# When Headroom's subscription_window poller hasn't refreshed in this long,
+# the Claude Usage card is surfaced as "stale" instead of "ok" so the user
+# can tell when upstream credentials expired or the poller stalled, rather
+# than staring at a forever-green card frozen on old percentages.
+CLAUDE_USAGE_STALE_AFTER_SECONDS = 300
+
+
+def _utc_now():
+    """Return current UTC time. Exposed as a helper so tests can freeze time
+    when asserting claude_usage staleness transitions."""
+    return datetime.now(timezone.utc)
+
 # Persistent state for sparklines and fallback
 _last_good = {}
 # Last successful claude_usage fetch. Pinned here so that transient Headroom
@@ -269,8 +281,26 @@ def _format_headroom_recent_requests(entries):
     return history
 
 
-def collect_headroom():
-    """Check headroom proxy stats endpoint."""
+def _fetch_headroom_stats_raw():
+    """Fetch raw Headroom /stats JSON once. Shared between collect_headroom
+    and collect_claude_usage so collect_all only issues one /stats request
+    per tick instead of two. Returns None on failure (URLError, timeout,
+    malformed JSON) — callers fall back to their own handling."""
+    try:
+        resp = urlopen(f"{HEADROOM_URL}/stats", timeout=2)
+        return json.loads(resp.read().decode())
+    except (URLError, OSError, json.JSONDecodeError):
+        return None
+
+
+def collect_headroom(stats_raw=None):
+    """Check headroom proxy stats endpoint.
+
+    When stats_raw is provided (by collect_all sharing a single /stats fetch
+    across the tick), parse it directly instead of hitting the endpoint
+    again. Otherwise, fall back to the standalone fetch path so tests and
+    direct callers keep working.
+    """
     try:
         global _headroom_version, _headroom_last_total, _headroom_history
         if _headroom_version is None:
@@ -287,8 +317,9 @@ def collect_headroom():
         version = _headroom_version or "unknown"
 
         try:
-            resp = urlopen(f"{HEADROOM_URL}/stats", timeout=2)
-            raw = json.loads(resp.read().decode())
+            raw = stats_raw if stats_raw is not None else _fetch_headroom_stats_raw()
+            if raw is None:
+                raise URLError("shared /stats fetch returned None")
 
             tokens_section = raw.get("tokens") or {}
             cache_section = raw.get("compression_cache") or {}
@@ -525,7 +556,7 @@ def collect_jdocmunch():
         return None
 
 
-def collect_claude_usage():
+def collect_claude_usage(stats_raw=None):
     """Pull Claude subscription window values from Headroom's /stats endpoint.
 
     Headroom already polls https://api.anthropic.com/api/oauth/usage on a
@@ -535,22 +566,29 @@ def collect_claude_usage():
     limit to dodge, (c) one source of truth for "what does Anthropic think
     my usage is right now".
 
-    On transient failure (URLError/timeout/bad JSON/missing subscription_window)
-    returns the last successful payload instead of {"active": False} — this
-    prevents the Claude Usage card from flashing to "--" between ticks when
-    Headroom is temporarily slow. Cold start with no prior success falls back
-    to {"active": False}.
+    When collect_all passes in stats_raw, reuse that payload instead of
+    re-fetching /stats — otherwise we burn 240 extra /stats calls per minute
+    at COLLECTOR_INTERVAL=0.25 and compound timeout stalls whenever Headroom
+    is slow. Direct callers (tests, cold start) leave stats_raw=None and
+    fall back to a standalone fetch.
 
-    Returns the contract shape _flatten_snapshot expects:
-    session_pct / session_reset / weekly_pct / weekly_reset /
-    sonnet_pct / sonnet_reset / extra_usage_* / active.
+    Freshness: Headroom's upstream poller can fail silently (expired OAuth
+    token, 4xx from Anthropic, network hiccups). When that happens, the
+    subscription_window.latest values stay frozen from the last good poll.
+    We detect this by comparing latest.polled_at to now; older than
+    CLAUDE_USAGE_STALE_AFTER_SECONDS, and the result carries health="stale"
+    so the dashboard can stop showing the card as forever-green. Missing
+    polled_at (legacy upstream) is also treated as stale — better a false
+    positive than a hidden outage.
+
+    On transient fetch failure returns the last successful payload instead
+    of {"active": False} so the card doesn't flash to "--" between ticks.
+    Cold start with no prior success falls back to {"active": False}.
     """
     global _claude_usage_last_good
 
-    try:
-        resp = urlopen(f"{HEADROOM_URL}/stats", timeout=3)
-        raw = json.loads(resp.read())
-    except (URLError, OSError, json.JSONDecodeError):
+    raw = stats_raw if stats_raw is not None else _fetch_headroom_stats_raw()
+    if raw is None:
         return _claude_usage_last_good or {"active": False}
 
     latest = (raw.get("subscription_window") or {}).get("latest") or {}
@@ -563,8 +601,22 @@ def collect_claude_usage():
     extra = latest.get("extra_usage") or {}
     extra_enabled = bool(extra.get("is_enabled"))
 
+    polled_at = latest.get("polled_at")
+    health = "stale"
+    if polled_at:
+        try:
+            polled_dt = datetime.fromisoformat(polled_at.replace("Z", "+00:00"))
+            if polled_dt.tzinfo is None:
+                polled_dt = polled_dt.replace(tzinfo=timezone.utc)
+            age = (_utc_now() - polled_dt).total_seconds()
+            health = "ok" if age <= CLAUDE_USAGE_STALE_AFTER_SECONDS else "stale"
+        except (ValueError, TypeError):
+            health = "stale"
+
     result = {
         "active": True,
+        "health": health,
+        "polled_at": polled_at,
         "session_pct": five.get("utilization_pct"),
         "session_reset": five.get("resets_at"),
         "weekly_pct": seven.get("utilization_pct"),
@@ -583,18 +635,33 @@ def collect_claude_usage():
     return result
 
 
-WEEKLY_CACHE_SCHEMA_VERSION = 2
+WEEKLY_CACHE_SCHEMA_VERSION = 3
+
+# Fingerprint of the combined_saved formula used when a baseline is written.
+# Stored inside weekly.json so _load_weekly_cache can detect any future change
+# to the formula and drop the baseline instead of comparing incomparable
+# totals. Whenever collect_all's combined_saved computation changes, update
+# this string — existing caches will auto-rebase on next load.
+COMBINED_SAVED_DEFINITION = (
+    "headroom:lifetime_saved||total_saved;rtk:total_saved;"
+    "jcodemunch:total_saved;jdocmunch:total_saved"
+)
 
 
 def _load_weekly_cache():
     """Load weekly savings snapshot from disk.
 
-    Drops pre-v2 caches: the baseline stored in v1 was written against the
-    old combined_saved definition (sum of headroom.total_saved + others).
-    The v2 definition uses headroom.lifetime_saved, so the old baseline is
-    no longer comparable and would produce wildly wrong this_week/last_week
-    numbers after upgrade. Returning {} forces collect_all's first-run
-    path to re-seed the baseline against the new combined_saved.
+    Pre-v2: dropped (baseline was written against the old total_saved-based
+    combined_saved definition, incomparable to the current lifetime_saved
+    formula).
+
+    v2: the formula matches v3, so migrate in place — preserve the baseline,
+    stamp the schema version and definition fingerprint forward so the user
+    does not lose their weekly progress on upgrade.
+
+    v3+: require an exact combined_saved_definition match. A mismatch means
+    the formula changed without a schema bump (or the definition constant
+    was edited); drop the cache so collect_all re-seeds a fresh baseline.
     """
     path = os.path.join(WEEKLY_CACHE_DIR, "weekly.json")
     try:
@@ -602,7 +669,18 @@ def _load_weekly_cache():
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
-    if data.get("schema_version", 1) < WEEKLY_CACHE_SCHEMA_VERSION:
+
+    ver = data.get("schema_version", 1)
+    if ver < 2:
+        return {}
+    if ver == 2:
+        # Persist the migration so subsequent loads hit the fast path
+        # (v3+ exact-match branch) instead of re-migrating every tick.
+        data["schema_version"] = WEEKLY_CACHE_SCHEMA_VERSION
+        data["combined_saved_definition"] = COMBINED_SAVED_DEFINITION
+        _save_weekly_cache(data)
+        return data
+    if data.get("combined_saved_definition") != COMBINED_SAVED_DEFINITION:
         return {}
     return data
 
@@ -613,6 +691,7 @@ def _save_weekly_cache(data):
     path = os.path.join(WEEKLY_CACHE_DIR, "weekly.json")
     payload = dict(data)
     payload["schema_version"] = WEEKLY_CACHE_SCHEMA_VERSION
+    payload["combined_saved_definition"] = COMBINED_SAVED_DEFINITION
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
 
@@ -785,6 +864,14 @@ def _flatten_snapshot(snap):
     spark_jdm = sparklines.get("jdocmunch") or {}
 
     claude_active = bool(claude.get("active"))
+    # claude_usage_health lets statusline consumers distinguish "no data ever
+    # seen" (error) from "stale data held open by fallback" (stale) from
+    # "fresh" (ok). Legacy shapes without a health field default to ok iff
+    # active, else error — matches the pre-freshness contract.
+    claude_usage_health = claude.get("health") or (
+        "ok" if claude_active else "error"
+    )
+    claude_usage_polled_at = claude.get("polled_at")
     # A cached pct only makes sense while its reset window is still in the
     # future. Once the window rolls over, the cached utilization refers to
     # a dead window and must be scrubbed — otherwise a rate-limited backend
@@ -888,6 +975,9 @@ def _flatten_snapshot(snap):
         "extra_usage_monthly_limit": _claude("extra_usage_monthly_limit"),
         "extra_usage_used": _claude("extra_usage_used"),
         "extra_usage_pct": _claude("extra_usage_pct"),
+
+        "claude_usage_health": claude_usage_health,
+        "claude_usage_polled_at": claude_usage_polled_at,
     }
 
 
@@ -895,9 +985,17 @@ def collect_all():
     """Collect from all tools, maintain sparklines and fallbacks."""
     global _last_good
 
+    # Fetch Headroom /stats once per tick and share the payload with both
+    # collect_headroom (savings metrics) and collect_claude_usage
+    # (subscription_window poll). Pre-refactor each collector fetched its
+    # own copy, doubling the request rate and compounding stalls when
+    # Headroom was slow. None on failure — each collector has its own
+    # fallback behaviour in that case.
+    headroom_stats_raw = _fetch_headroom_stats_raw()
+
     collectors = {
         "rtk": collect_rtk,
-        "headroom": collect_headroom,
+        "headroom": lambda: collect_headroom(stats_raw=headroom_stats_raw),
         "jcodemunch": collect_jcodemunch,
         "jdocmunch": collect_jdocmunch,
     }
@@ -933,8 +1031,9 @@ def collect_all():
         else:
             combined_saved += tool_data.get("total_saved", 0)
 
-    # Weekly savings tracking
-    claude_usage = collect_claude_usage()
+    # Weekly savings tracking — reuse the same /stats payload to avoid a
+    # second HTTP call per tick (Codex P1).
+    claude_usage = collect_claude_usage(stats_raw=headroom_stats_raw)
     weekly_data = _load_weekly_cache()
 
     if claude_usage and claude_usage.get("weekly_reset"):
@@ -987,13 +1086,24 @@ def collect_all():
         claude_usage.get("weekly_reset") if claude_usage else None
     )
 
-    # Update sparkline buffers with cumulative totals
+    # Update sparkline buffers with cumulative totals.
+    # For headroom, feed on lifetime_saved (persistent across container
+    # restarts) instead of total_saved (in-memory stats-cycle counter that
+    # rewinds to zero on restart). Mixing the two counters produced a huge
+    # negative delta whenever Headroom restarted, flattening the spark line.
+    # Align the buffer with the headline combined_saved formula.
     now = time.time()
     for name in collectors:
         tool_data = results[name]
         if not tool_data.get("active"):
             continue
-        cumulative = tool_data.get("total_saved", 0)
+        if name == "headroom":
+            cumulative = (
+                tool_data.get("lifetime_saved")
+                or tool_data.get("total_saved", 0)
+            )
+        else:
+            cumulative = tool_data.get("total_saved", 0)
         _sparkline_buffers[name].append((now, cumulative))
 
     # Compute deltas and sparkline points
@@ -1773,7 +1883,12 @@ function updateDashboard(d) {
     document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
 
     // --- Claude Usage card ---
-    document.getElementById('summary-claude-health').className = 'health-dot ' + (cu.active ? 'health-ok' : 'health-error');
+    // cu.health can be "ok" / "stale" / "error". Stale means Headroom's
+    // subscription_window poller stopped refreshing (expired credentials,
+    // upstream errors) and the percentages are frozen from an older poll.
+    // Fall back to active-derived when the field is missing (legacy shape).
+    var cuHealth = cu.health || (cu.active ? 'ok' : 'error');
+    document.getElementById('summary-claude-health').className = 'health-dot health-' + cuHealth;
     applyPctField(document.getElementById('summary-session-pct'), cu.active ? cu.session_pct : null);
     applyPctField(document.getElementById('summary-weekly-pct'), cu.active ? cu.weekly_pct : null);
     applyPctField(document.getElementById('summary-sonnet-pct'), cu.active ? cu.sonnet_pct : null);

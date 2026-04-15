@@ -76,6 +76,12 @@ CONTRACT_KEYS = [
     "extra_usage_monthly_limit",
     "extra_usage_used",
     "extra_usage_pct",
+    # Surface upstream freshness state to statusline consumers. "error" when
+    # no successful Claude usage fetch has ever landed, "stale" when Headroom's
+    # subscription_window poller stopped refreshing (the values are frozen from
+    # an earlier successful poll), "ok" when the latest poll is fresh.
+    "claude_usage_health",
+    "claude_usage_polled_at",
 ]
 
 
@@ -1099,4 +1105,392 @@ def test_format_claude_reset_handles_empty_and_invalid():
     assert app._format_claude_reset("") == ""
     assert app._format_claude_reset("not-a-timestamp") == ""
 
+
+# ---------------------------------------------------------------------------
+# Codex P1: share Headroom /stats payload between collect_headroom and
+# collect_claude_usage so collect_all only fetches /stats once per tick.
+# ---------------------------------------------------------------------------
+
+
+def test_collect_claude_usage_reuses_shared_stats_payload(monkeypatch):
+    """When a shared /stats payload is passed in via stats_raw, the collector
+    must parse it directly instead of making its own urlopen call. This
+    eliminates the duplicate /stats request collect_all was making every tick
+    (240/min at COLLECTOR_INTERVAL=0.25 with a 3s timeout path)."""
+    import app
+
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+
+    def _should_not_be_called(*args, **kwargs):
+        raise AssertionError(
+            "urlopen must not be called when stats_raw is provided"
+        )
+    monkeypatch.setattr(app, "urlopen", _should_not_be_called)
+
+    result = app.collect_claude_usage(
+        stats_raw=_HEADROOM_STATS_WITH_SUBSCRIPTION
+    )
+
+    assert result["active"] is True
+    assert result["session_pct"] == 14.0
+    assert result["weekly_pct"] == 5.0
+    assert result["sonnet_pct"] == 8.0
+
+
+def test_collect_headroom_reuses_shared_stats_payload(monkeypatch):
+    """collect_headroom must accept a pre-fetched /stats payload so collect_all
+    can share one fetch between collect_headroom and collect_claude_usage."""
+    import app
+
+    monkeypatch.setattr(app, "_headroom_version", "1.2.3")
+    monkeypatch.setattr(app, "_headroom_last_total", 0)
+    monkeypatch.setattr(app, "_headroom_history", [])
+
+    def _should_not_be_called(*args, **kwargs):
+        raise AssertionError(
+            "urlopen must not be called when stats_raw is provided"
+        )
+    monkeypatch.setattr(app, "urlopen", _should_not_be_called)
+
+    data = app.collect_headroom(stats_raw=_HEADROOM_STATS_WITH_SUBSCRIPTION)
+
+    assert data is not None
+    assert data["active"] is True
+    assert data["version"] == "1.2.3"
+
+
+def test_collect_all_fetches_headroom_stats_once_per_cycle(monkeypatch, tmp_path):
+    """collect_all must perform at most one /stats fetch per tick. Previously
+    collect_headroom and collect_claude_usage each issued their own, doubling
+    the request rate and compounding latency when Headroom was slow."""
+    import app
+    import json as _json
+
+    monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(app, "_headroom_version", "1.2.3")
+    monkeypatch.setattr(app, "_headroom_last_total", 0)
+    monkeypatch.setattr(app, "_headroom_history", [])
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+    for name in app._sparkline_buffers:
+        app._sparkline_buffers[name].clear()
+    for name in app._last_collect_success:
+        app._last_collect_success[name] = 0.0
+    app._last_good.clear()
+
+    stats_calls = {"n": 0}
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return _json.dumps(self._payload).encode()
+
+    def _fake_urlopen(url, timeout=2):
+        if url.endswith("/stats"):
+            stats_calls["n"] += 1
+        return _Resp(_HEADROOM_STATS_WITH_SUBSCRIPTION)
+
+    monkeypatch.setattr(app, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(app, "collect_rtk", lambda: {"active": False})
+    monkeypatch.setattr(app, "collect_jcodemunch", lambda: {"active": False})
+    monkeypatch.setattr(app, "collect_jdocmunch", lambda: {"active": False})
+
+    app.collect_all()
+
+    assert stats_calls["n"] == 1, (
+        f"collect_all fired {stats_calls['n']} /stats fetches per tick; "
+        "expected exactly 1 (shared between collect_headroom and collect_claude_usage)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex P2: surface stale Claude usage when Headroom's subscription_window
+# poller hasn't refreshed recently (credentials expired, upstream errors).
+# The card must not stay forever-green once fresh data stops arriving.
+# ---------------------------------------------------------------------------
+
+
+def _with_fresh_polled_at(payload, polled_at):
+    """Deep-copy _HEADROOM_STATS_WITH_SUBSCRIPTION with a custom polled_at."""
+    import copy as _copy
+
+    clone = _copy.deepcopy(payload)
+    clone["subscription_window"]["latest"]["polled_at"] = polled_at
+    return clone
+
+
+def test_collect_claude_usage_marks_health_ok_when_polled_at_is_recent(monkeypatch):
+    """When Headroom's subscription_window was polled within the freshness
+    window, the returned payload is healthy."""
+    import app
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+
+    fake_now = datetime(2026, 4, 15, 1, 50, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(app, "_utc_now", lambda: fake_now)
+
+    fresh_polled_at = (fake_now - timedelta(seconds=30)).isoformat()
+    payload = _with_fresh_polled_at(
+        _HEADROOM_STATS_WITH_SUBSCRIPTION, fresh_polled_at
+    )
+
+    result = app.collect_claude_usage(stats_raw=payload)
+
+    assert result["active"] is True
+    assert result["health"] == "ok"
+    assert result["polled_at"] == fresh_polled_at
+
+
+def test_collect_claude_usage_marks_health_stale_when_polled_at_is_old(monkeypatch):
+    """When Headroom's subscription_window poller has stopped refreshing
+    (poll_errors climbing, credentials expired, upstream 4xx), the values we
+    show are frozen. The result must carry health='stale' so the dashboard
+    can stop presenting the Claude Usage card as forever-green."""
+    import app
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+
+    fake_now = datetime(2026, 4, 15, 1, 50, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(app, "_utc_now", lambda: fake_now)
+
+    # 15 minutes past — way beyond a reasonable poll gap.
+    old_polled_at = (fake_now - timedelta(minutes=15)).isoformat()
+    payload = _with_fresh_polled_at(
+        _HEADROOM_STATS_WITH_SUBSCRIPTION, old_polled_at
+    )
+
+    result = app.collect_claude_usage(stats_raw=payload)
+
+    assert result["active"] is True  # cached values are still usable
+    assert result["health"] == "stale"
+    assert result["polled_at"] == old_polled_at
+
+
+def test_collect_claude_usage_stale_when_polled_at_is_missing(monkeypatch):
+    """Legacy Headroom responses without polled_at are treated as stale —
+    we can't prove freshness, so err on the side of signalling it."""
+    import app
+    import copy as _copy
+
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+    payload = _copy.deepcopy(_HEADROOM_STATS_WITH_SUBSCRIPTION)
+    payload["subscription_window"]["latest"].pop("polled_at", None)
+
+    result = app.collect_claude_usage(stats_raw=payload)
+
+    assert result["active"] is True
+    assert result["health"] == "stale"
+    assert result["polled_at"] is None
+
+
+def test_flatten_snapshot_propagates_claude_usage_health_and_polled_at():
+    """_flatten_snapshot must forward claude_usage.health and claude_usage.polled_at
+    as flat contract keys so statusline consumers can detect upstream freshness."""
+    import app
+    import copy as _copy
+
+    snap = _copy.deepcopy(FULL_SNAP)
+    snap["claude_usage"]["health"] = "stale"
+    snap["claude_usage"]["polled_at"] = "2026-04-15T00:42:09+00:00"
+
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["claude_usage_health"] == "stale"
+    assert flat["claude_usage_polled_at"] == "2026-04-15T00:42:09+00:00"
+
+
+def test_flatten_snapshot_claude_usage_health_defaults_error_when_inactive():
+    """A missing / inactive claude_usage dict maps to health='error', not 'ok'."""
+    import app
+    import copy as _copy
+
+    snap = _copy.deepcopy(FULL_SNAP)
+    snap["claude_usage"] = {"active": False}
+
+    flat = app._flatten_snapshot(snap)
+
+    assert flat["claude_usage_health"] == "error"
+    assert flat["claude_usage_polled_at"] is None
+
+
+def test_flatten_snapshot_claude_usage_health_ok_when_active_and_unspecified():
+    """A claude_usage dict that is active but does not carry an explicit health
+    field (legacy shape) maps to 'ok' for back-compat."""
+    import app
+
+    flat = app._flatten_snapshot(FULL_SNAP)
+    assert flat["claude_usage_health"] == "ok"
+    assert flat["claude_usage_polled_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Codex P2: sparkline buffer must use lifetime_saved for headroom so a
+# Headroom restart (total_saved resets, lifetime_saved persists) does not
+# produce a massive negative delta/dip in the spark line.
+# ---------------------------------------------------------------------------
+
+
+def test_sparkline_buffer_uses_lifetime_saved_for_headroom(monkeypatch, tmp_path):
+    """After a Headroom process restart, tokens.saved (total_saved) rewinds to
+    near-zero while persistent_savings.lifetime.tokens_saved keeps climbing.
+    The headline in collect_all and the headroom card both show
+    lifetime_saved, but the sparkline buffer used total_saved — so a restart
+    created a huge negative delta that made the spark line look dead.
+    The buffer must feed on the same counter the headline uses."""
+    import app
+
+    monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(tmp_path))
+    for buf in app._sparkline_buffers.values():
+        buf.clear()
+    for name in app._last_collect_success:
+        app._last_collect_success[name] = 0.0
+    app._last_good.clear()
+    monkeypatch.setattr(app, "_claude_usage_last_good", None)
+
+    # Silence everything except headroom.
+    monkeypatch.setattr(app, "collect_rtk", lambda: {"active": False})
+    monkeypatch.setattr(app, "collect_jcodemunch", lambda: {"active": False})
+    monkeypatch.setattr(app, "collect_jdocmunch", lambda: {"active": False})
+    monkeypatch.setattr(app, "collect_claude_usage",
+                        lambda stats_raw=None: {"active": False})
+    monkeypatch.setattr(app, "_fetch_headroom_stats_raw", lambda: None)
+
+    ticks = [
+        {
+            "active": True,
+            "version": "1.0",
+            "total_saved": 100_000_000,
+            "lifetime_saved": 100_000_000,
+            "history": [],
+        },
+        # Restart event: total_saved rewinds to 50, lifetime_saved keeps going.
+        {
+            "active": True,
+            "version": "1.0",
+            "total_saved": 50,
+            "lifetime_saved": 100_000_050,
+            "history": [],
+        },
+    ]
+    idx = {"n": 0}
+
+    def _fake_headroom(stats_raw=None):
+        i = idx["n"]
+        idx["n"] += 1
+        return ticks[i]
+
+    monkeypatch.setattr(app, "collect_headroom", _fake_headroom)
+
+    app.collect_all()  # seeds tick 1
+    snap = app.collect_all()  # tick 2, across restart
+
+    hr_delta = snap["sparklines"]["headroom"]["delta"]
+    assert hr_delta == 50, (
+        f"Expected +50 lifetime_saved delta across a Headroom restart, "
+        f"got {hr_delta} (sparkline buffer still reading total_saved)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex P1: weekly cache must drop baselines computed against a stale
+# combined_saved formula, but preserve v2 baselines (which were written
+# against the same formula v3 uses).
+# ---------------------------------------------------------------------------
+
+
+def test_weekly_cache_v2_is_migrated_in_place_to_v3(tmp_path, monkeypatch):
+    """v2 baselines were written against the same combined_saved formula that
+    v3 uses, so migrate in place and preserve the user's weekly progress.
+    The cache is stamped with the current formula fingerprint on load so
+    future schema checks can verify it."""
+    import app
+    import json as _json
+
+    cache_dir = tmp_path / "dash"
+    cache_dir.mkdir()
+    cache_path = cache_dir / "weekly.json"
+    cache_path.write_text(_json.dumps({
+        "current_week_baseline": 14847609,
+        "current_week_start": "2026-04-14T18:30:05+00:00",
+        "weekly_reset_at": "2026-04-21T18:00:00+00:00",
+        "last_week_savings": 0,
+        "schema_version": 2,
+    }))
+    monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(cache_dir))
+
+    loaded = app._load_weekly_cache()
+
+    assert loaded["current_week_baseline"] == 14847609  # preserved
+    assert loaded["schema_version"] == app.WEEKLY_CACHE_SCHEMA_VERSION  # stamped forward
+    assert loaded["combined_saved_definition"] == app.COMBINED_SAVED_DEFINITION
+
+    # Migration must persist to disk so subsequent loads hit the fast
+    # v3+ path instead of re-migrating every tick.
+    on_disk = _json.loads(cache_path.read_text())
+    assert on_disk["schema_version"] == app.WEEKLY_CACHE_SCHEMA_VERSION
+    assert on_disk["combined_saved_definition"] == app.COMBINED_SAVED_DEFINITION
+    assert on_disk["current_week_baseline"] == 14847609
+
+
+def test_weekly_cache_drops_mismatched_definition_fingerprint(tmp_path, monkeypatch):
+    """A v3+ cache whose combined_saved_definition no longer matches the
+    current formula must be dropped — the baseline is not comparable and
+    would produce wrong this-week numbers."""
+    import app
+    import json as _json
+
+    cache_dir = tmp_path / "dash"
+    cache_dir.mkdir()
+    cache_path = cache_dir / "weekly.json"
+    cache_path.write_text(_json.dumps({
+        "current_week_baseline": 42,
+        "schema_version": 3,
+        "combined_saved_definition": "old-formula-that-no-longer-exists",
+    }))
+    monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(cache_dir))
+
+    assert app._load_weekly_cache() == {}
+
+
+def test_weekly_cache_save_stamps_combined_saved_definition(tmp_path, monkeypatch):
+    """_save_weekly_cache must stamp both schema_version and the combined
+    _saved formula fingerprint so subsequent loads can verify compatibility."""
+    import app
+    import json as _json
+
+    cache_dir = tmp_path / "dash"
+    monkeypatch.setattr(app, "WEEKLY_CACHE_DIR", str(cache_dir))
+
+    app._save_weekly_cache({"current_week_baseline": 200, "last_week_savings": 0})
+
+    saved = _json.loads((cache_dir / "weekly.json").read_text())
+    assert saved["schema_version"] == app.WEEKLY_CACHE_SCHEMA_VERSION
+    assert saved["combined_saved_definition"] == app.COMBINED_SAVED_DEFINITION
+    assert saved["current_week_baseline"] == 200
+
+
+# ---------------------------------------------------------------------------
+# Codex P2: build.sh must pass $PORT into the container env, otherwise a
+# PORT=NNNN override publishes NNNN but the app still listens on 8095
+# inside the container.
+# ---------------------------------------------------------------------------
+
+
+def test_buildsh_propagates_port_override_to_container_env():
+    """build.sh advertises PORT as overridable (line 24). The docker run
+    invocation must set -e PORT="$PORT" so the Flask app inside the container
+    actually binds to the overridden port, not the default 8095."""
+    import os
+
+    buildsh = os.path.join(os.path.dirname(__file__), "..", "build.sh")
+    with open(buildsh) as f:
+        content = f.read()
+
+    assert '-p "$PORT:$PORT"' in content, "docker -p port publish must be present"
+    assert '-e PORT="$PORT"' in content, (
+        "docker -e PORT must be present so the container listens on the overridden port"
+    )
 
