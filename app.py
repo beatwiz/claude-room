@@ -287,10 +287,17 @@ def collect_headroom(stats_raw=None):
             recent_requests = raw.get("recent_requests") or []
 
             total_saved = tokens_section.get("saved") or 0
+            lifetime_saved = persist.get("tokens_saved") or 0
             avg_pct = round(tokens_section.get("savings_percent") or 0, 1)
 
-            if _headroom_last_total > 0 and total_saved > _headroom_last_total:
-                delta = total_saved - _headroom_last_total
+            # Track delta against `lifetime_saved` — the same counter the
+            # Headroom card's headline displays. `total_saved` resets when
+            # Headroom restarts, which would otherwise produce giant negative
+            # jumps (or, with the gate below, a silent drop where lifetime
+            # keeps rising but no activity entries appear for a while).
+            delta_source = lifetime_saved if lifetime_saved > 0 else total_saved
+            if _headroom_last_total > 0 and delta_source > _headroom_last_total:
+                delta = delta_source - _headroom_last_total
                 if avg_pct and avg_pct > 0:
                     input_est = int(round(delta / (avg_pct / 100)))
                     output_est = max(0, input_est - delta)
@@ -305,7 +312,7 @@ def collect_headroom(stats_raw=None):
                     "saved_pct": avg_pct,
                 })
                 _headroom_history = _headroom_history[-100:]
-            _headroom_last_total = total_saved
+            _headroom_last_total = delta_source
 
             # Prefer our own _headroom_history (built from delta-on-total_saved
             # every tick, so it captures every compression event). Fall back to
@@ -343,6 +350,33 @@ def collect_headroom(stats_raw=None):
         return None
 
 
+def _rehealth_claude_usage_fallback():
+    """Return `_claude_usage_last_good` with health re-derived from `polled_at`.
+
+    The cached payload captured health at write time. When /stats fetches
+    later fail, returning that payload verbatim keeps a card green forever
+    even though the underlying data is ancient. Re-evaluate age against
+    CLAUDE_USAGE_STALE_AFTER_SECONDS before serving the fallback so an
+    extended Headroom outage surfaces as `stale`.
+    """
+    if _claude_usage_last_good is None:
+        return {"active": False}
+    cached = dict(_claude_usage_last_good)
+    polled_at = cached.get("polled_at")
+    if not polled_at:
+        cached["health"] = "stale"
+        return cached
+    try:
+        polled_dt = datetime.fromisoformat(polled_at.replace("Z", "+00:00"))
+        if polled_dt.tzinfo is None:
+            polled_dt = polled_dt.replace(tzinfo=timezone.utc)
+        age = (_utc_now() - polled_dt).total_seconds()
+        cached["health"] = "ok" if age <= CLAUDE_USAGE_STALE_AFTER_SECONDS else "stale"
+    except (ValueError, TypeError):
+        cached["health"] = "stale"
+    return cached
+
+
 def collect_claude_usage(stats_raw=None):
     """Pull Claude subscription window values from Headroom's /stats endpoint.
 
@@ -376,11 +410,11 @@ def collect_claude_usage(stats_raw=None):
 
     raw = stats_raw if stats_raw is not None else _fetch_headroom_stats_raw()
     if raw is None:
-        return _claude_usage_last_good or {"active": False}
+        return _rehealth_claude_usage_fallback()
 
     latest = (raw.get("subscription_window") or {}).get("latest") or {}
     if not latest:
-        return _claude_usage_last_good or {"active": False}
+        return _rehealth_claude_usage_fallback()
 
     five = latest.get("five_hour") or {}
     seven = latest.get("seven_day") or {}
