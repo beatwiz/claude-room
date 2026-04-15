@@ -29,8 +29,6 @@ TZ_VALUE="${TZ:-Europe/Lisbon}"
 # them without bundling the binaries. Empty string -> dashboard renders
 # "unknown" for that tool.
 rtk_v="$(rtk --version 2>/dev/null | awk '{print $NF}' || true)"
-jcm_v="$(jcodemunch-mcp --version 2>/dev/null | awk '{print $NF}' || true)"
-jdm_v="$(pip show jdocmunch-mcp 2>/dev/null | awk '/^Version:/ {print $2}' || true)"
 
 echo "build.sh: building image '$IMAGE' from $SCRIPT_DIR"
 docker build -t "$IMAGE" "$SCRIPT_DIR" >/dev/null
@@ -39,8 +37,6 @@ echo "build.sh: replacing container '$CONTAINER'"
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
 # macOS-specific path for rtk's SQLite DB lives under Application Support.
-# The code-index / doc-index / cache dirs follow the default locations used
-# by jcodemunch-mcp, jdocmunch-mcp, and this app respectively.
 docker run -d \
     --name "$CONTAINER" \
     --network "$NETWORK" \
@@ -50,10 +46,6 @@ docker run -d \
     -e HEADROOM_URL="$HEADROOM_URL" \
     -e TZ="$TZ_VALUE" \
     -e RTK_VERSION="$rtk_v" \
-    -e JCODEMUNCH_VERSION="$jcm_v" \
-    -e JDOCMUNCH_VERSION="$jdm_v" \
-    -v "$HOME/.code-index:/root/.code-index" \
-    -v "$HOME/.doc-index:/root/.doc-index" \
     -v "$HOME/Library/Application Support/rtk:/root/.local/share/rtk" \
     -v "$HOME/.cache/claude-tools-dashboard:/root/.cache/claude-tools-dashboard" \
     "$IMAGE" >/dev/null
