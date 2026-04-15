@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+- Dropped jcodemunch-mcp and jdocmunch-mcp integration end-to-end: collectors, flat-contract keys, env vars, dashboard cards, and global config permissions. The `JCODEMUNCH_*` / `JDOCMUNCH_*` env vars and the `jcodemunch_*` / `jdocmunch_*` flat JSON fields are gone. `/api/status` consumers that still read those keys must be updated.
+
+### Changed
+- Merged the Claude Usage and Extra Usage cards into a single **Usage** card with a `[Claude | Extra]` toggle. Default mode auto-follows `extra_usage_enabled`; a user click sticks for the session.
+- Dashboard collapses to a single row of four cards: Combined, Usage, RTK, Headroom.
+
 ## [1.2.0] - 2026-04-09
 
 Activity feed realtime rewrite. The LIVE ACTIVITY feed now updates within

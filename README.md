@@ -5,7 +5,7 @@
 [![Docker Hub](https://img.shields.io/docker/v/willluck/claude-tools-dashboard?logo=docker&logoColor=white&label=Docker%20Hub)](https://hub.docker.com/r/willluck/claude-tools-dashboard)
 [![GHCR](https://img.shields.io/badge/ghcr.io-available-2496ed?logo=github&logoColor=white)](https://ghcr.io/will-luck/claude-tools-dashboard)
 
-Live wallboard for monitoring token savings across your Claude Code toolchain. Tracks [RTK](https://github.com/reachingforthejack/rtk), [Headroom](https://github.com/chopratejas/headroom), [jCodeMunch](https://github.com/jgravelle/jcodemunch-mcp), and [jDocMunch](https://github.com/jgravelle/jdocmunch-mcp) in a single-page dashboard with real-time SSE updates.
+Live wallboard for monitoring token savings across your Claude Code toolchain — RTK and Headroom.
 
 ![Dashboard](screenshots/dashboard-full.png)
 
@@ -13,8 +13,6 @@ Live wallboard for monitoring token savings across your Claude Code toolchain. T
 
 - **RTK** -- command-level token savings from the CLI proxy (SQLite)
 - **Headroom** -- context compression stats from the MCP server (HTTP API)
-- **jCodeMunch** -- indexed repos and session savings (filesystem + MCP)
-- **jDocMunch** -- documentation indexing and section retrieval savings (filesystem)
 - **Combined total** with sparkline trends and live activity feed
 - **Stats ticker** -- weekly savings breakdown, daily burn rate, Claude usage percentages (5-hour, weekly, Sonnet), and reset countdown (sourced from Headroom's `subscription_window` stats -- no Claude credentials needed)
 
@@ -70,9 +68,6 @@ All settings via environment variables. Copy `.env.example` for reference:
 | `HEADROOM_URL` | `http://127.0.0.1:8787` | Headroom proxy stats endpoint |
 | `RTK_DB_PATH` | `~/.local/share/rtk/history.db` | RTK SQLite database |
 | `RTK_BIN` | `rtk` | Path to RTK binary |
-| `JCODEMUNCH_INDEX_DIR` | `~/.code-index` | jCodeMunch index directory |
-| `JDOCMUNCH_INDEX_DIR` | `~/.doc-index` | jDocMunch index directory |
-| `JCODEMUNCH_BIN` | `jcodemunch-mcp` | Path to jCodeMunch binary |
 | `SSE_INTERVAL` | `30` | Seconds between SSE pushes |
 | `WEEKLY_CACHE_DIR` | `~/.cache/claude-tools-dashboard` | Weekly savings snapshot directory |
 
@@ -90,8 +85,7 @@ Single-file Flask app (`app.py`) that:
 
 1. Polls RTK's SQLite database for command history and savings
 2. Queries Headroom's HTTP stats API for compression data
-3. Reads jCodeMunch index files for repo and session metrics
-4. Pushes aggregated state to connected browsers via SSE
+3. Pushes aggregated state to connected browsers via SSE
 5. Serves a self-contained HTML/CSS/JS dashboard (no build step)
 
 The frontend uses vanilla JS with CSS custom properties for theming. Sparkline charts are drawn with inline SVG. No external dependencies beyond Flask.

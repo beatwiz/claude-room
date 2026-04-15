@@ -26,10 +26,6 @@ HOME = os.path.expanduser("~")
 HEADROOM_URL = os.environ.get("HEADROOM_URL", "http://127.0.0.1:8787")
 RTK_DB_PATH = os.environ.get("RTK_DB_PATH", os.path.join(HOME, ".local", "share", "rtk", "history.db"))
 RTK_BIN = os.environ.get("RTK_BIN", "rtk")
-JCODEMUNCH_INDEX_DIR = os.environ.get("JCODEMUNCH_INDEX_DIR", os.path.join(HOME, ".code-index"))
-JCODEMUNCH_BIN = os.environ.get("JCODEMUNCH_BIN", "jcodemunch-mcp")
-JDOCMUNCH_INDEX_DIR = os.environ.get("JDOCMUNCH_INDEX_DIR", os.path.join(HOME, ".doc-index"))
-JDOCMUNCH_BIN = os.environ.get("JDOCMUNCH_BIN", "jdocmunch-mcp")
 PORT = int(os.environ.get("PORT", "8095"))
 SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "2"))
 COLLECTOR_INTERVAL = float(os.environ.get("COLLECTOR_INTERVAL", "0.25"))
@@ -57,22 +53,12 @@ _claude_usage_last_good = None
 _sparkline_buffers = {
     "rtk": deque(maxlen=240),
     "headroom": deque(maxlen=240),
-    "jcodemunch": deque(maxlen=240),
-    "jdocmunch": deque(maxlen=240),
 }
 _headroom_last_total = 0
 _headroom_history = []
-_jcodemunch_last_total = 0
-_jcodemunch_last_mtime = 0
-_jcodemunch_history = []
-_jdocmunch_last_total = 0
-_jdocmunch_last_mtime = 0
-_jdocmunch_history = []
 _last_collect_success = {
     "rtk": 0.0,
     "headroom": 0.0,
-    "jcodemunch": 0.0,
-    "jdocmunch": 0.0,
 }
 
 # Cached version strings. resolve_versions_once() populates this at module
@@ -80,44 +66,14 @@ _last_collect_success = {
 # on the hot path.
 _cached_versions = {
     "rtk": None,
-    "jcodemunch": None,
-    "jdocmunch": None,
 }
-
-
-def _read_jcodemunch_config_version():
-    config_path = os.path.join(JCODEMUNCH_INDEX_DIR, "config.jsonc")
-    try:
-        with open(config_path) as f:
-            m = re.search(r'"version"\s*:\s*"([^"]+)"', f.read())
-            return m.group(1) if m else None
-    except OSError:
-        return None
 
 
 def resolve_versions_once():
     """Resolve tool versions once. Called by DashboardCollector.run() at thread startup.
-    Per-tool precedence: TOOL_VERSION env var > binary --version > tool-specific fallback > "unknown"."""
+    Per-tool precedence: TOOL_VERSION env var > binary --version > "unknown"."""
     rtk_v = os.environ.get("RTK_VERSION") or _run([RTK_BIN, "--version"])
     _cached_versions["rtk"] = rtk_v if rtk_v else "unknown"
-
-    jc_v = (
-        os.environ.get("JCODEMUNCH_VERSION")
-        or _run([JCODEMUNCH_BIN, "--version"])
-        or _read_jcodemunch_config_version()
-    )
-    _cached_versions["jcodemunch"] = jc_v if jc_v else "unknown"
-
-    jd_v = os.environ.get("JDOCMUNCH_VERSION") or _run([JDOCMUNCH_BIN, "--version"])
-    if not jd_v:
-        raw = _run(["pipx", "list", "--short"])
-        if raw:
-            for line in raw.splitlines():
-                if "jdocmunch" in line:
-                    parts = line.strip().split()
-                    jd_v = parts[1] if len(parts) > 1 else None
-                    break
-    _cached_versions["jdocmunch"] = jd_v if jd_v else "unknown"
 
 
 def _run(cmd, timeout=2):
@@ -387,175 +343,6 @@ def collect_headroom(stats_raw=None):
         return None
 
 
-def collect_jcodemunch():
-    """Read jcodemunch savings and index stats."""
-    try:
-        index_dir = JCODEMUNCH_INDEX_DIR
-        if not os.path.isdir(index_dir):
-            return None
-
-        savings_path = os.path.join(index_dir, "_savings.json")
-        total_tokens_saved = 0
-        if os.path.exists(savings_path):
-            with open(savings_path) as f:
-                data = json.load(f)
-            total_tokens_saved = data.get("total_tokens_saved", 0)
-
-        # Count .db files and sum sizes
-        index_dir = JCODEMUNCH_INDEX_DIR
-        db_files = glob.glob(os.path.join(index_dir, "*.db"))
-        repos_indexed = len(db_files)
-        index_size_bytes = sum(os.path.getsize(f) for f in db_files if os.path.exists(f))
-        index_size_mb = round(index_size_bytes / (1024 * 1024), 1)
-
-        version = _cached_versions.get("jcodemunch") or "unknown"
-
-        # Detect activity via the newest mtime across session_stats.json, _savings.json,
-        # and all per-repo .db files. jcodemunch-mcp flushes these at different times
-        # (neither file updates on every MCP call), so watching the max catches more events.
-        global _jcodemunch_last_total, _jcodemunch_last_mtime, _jcodemunch_history
-        stats_path = os.path.join(index_dir, "session_stats.json")
-        watched_paths = [stats_path, savings_path, *db_files]
-        newest_mtime = max(
-            (os.path.getmtime(p) for p in watched_paths if os.path.exists(p)),
-            default=0,
-        )
-        if newest_mtime > _jcodemunch_last_mtime and _jcodemunch_last_mtime > 0:
-            if total_tokens_saved > _jcodemunch_last_total and _jcodemunch_last_total > 0:
-                delta = total_tokens_saved - _jcodemunch_last_total
-                _jcodemunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jcodemunch",
-                    "cmd": f"indexed/queried across {repos_indexed} repos",
-                    "saved_tokens": delta,
-                    "saved_pct": 0,
-                })
-            else:
-                _jcodemunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jcodemunch",
-                    "cmd": f"query across {repos_indexed} repos ({index_size_mb}MB indexed)",
-                    "saved_tokens": 0,
-                    "saved_pct": 0,
-                })
-            _jcodemunch_history = _jcodemunch_history[-100:]
-        _jcodemunch_last_mtime = newest_mtime
-        _jcodemunch_last_total = total_tokens_saved
-
-        # Freshness: 100% if active in last 5 min, decays to 0% over 60 min
-        if newest_mtime > 0:
-            elapsed_min = (time.time() - newest_mtime) / 60
-            freshness = max(0, round(100 - (elapsed_min / 60 * 100)))
-        else:
-            freshness = 0
-
-        if freshness > 0:
-            if elapsed_min < 1:
-                freshness_label = "just now"
-            elif elapsed_min < 60:
-                freshness_label = f"{int(elapsed_min)}m ago"
-            else:
-                freshness_label = f"{int(elapsed_min / 60)}h ago"
-        else:
-            freshness_label = "idle"
-
-        return {
-            "active": repos_indexed > 0 or total_tokens_saved > 0,
-            "total_saved": total_tokens_saved,
-            "repos_indexed": repos_indexed,
-            "index_size_mb": index_size_mb,
-            "version": version or "unknown",
-            "history": list(_jcodemunch_history),
-            "freshness": freshness,
-            "freshness_label": freshness_label,
-        }
-    except Exception:
-        return None
-
-
-def collect_jdocmunch():
-    global _jdocmunch_last_total, _jdocmunch_last_mtime, _jdocmunch_history
-    try:
-        index_dir = JDOCMUNCH_INDEX_DIR
-        if not os.path.isdir(index_dir):
-            return None
-
-        savings_path = os.path.join(index_dir, "_savings.json")
-        total_tokens_saved = 0
-        if os.path.exists(savings_path):
-            with open(savings_path) as f:
-                data = json.load(f)
-            total_tokens_saved = data.get("total_tokens_saved", 0)
-
-        index_files = [f for f in glob.glob(os.path.join(index_dir, "local", "*.json"))]
-        docs_indexed = len(index_files)
-        index_size_mb = round(sum(os.path.getsize(f) for f in index_files) / (1024 * 1024), 1)
-
-        # Version (cached at startup)
-        version = _cached_versions.get("jdocmunch") or "unknown"
-
-        # _savings.json updates on every get_section call (token savings).
-        # Index JSON files update on re-index. Check both for activity.
-        savings_mtime = os.path.getmtime(savings_path) if os.path.exists(savings_path) else 0
-        idx_mtime = max(
-            (os.path.getmtime(f) for f in index_files),
-            default=0,
-        )
-        newest_mtime = max(savings_mtime, idx_mtime)
-
-        if newest_mtime > _jdocmunch_last_mtime and _jdocmunch_last_mtime > 0:
-            delta = total_tokens_saved - _jdocmunch_last_total
-            if delta > 0:
-                _jdocmunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jdocmunch",
-                    "cmd": f"indexed/queried across {docs_indexed} docs",
-                    "saved_tokens": delta,
-                    "saved_pct": 0,
-                })
-            else:
-                _jdocmunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jdocmunch",
-                    "cmd": f"query across {docs_indexed} docs ({index_size_mb}MB indexed)",
-                    "saved_tokens": 0,
-                    "saved_pct": 0,
-                })
-            _jdocmunch_history = _jdocmunch_history[-100:]
-        _jdocmunch_last_mtime = newest_mtime
-        _jdocmunch_last_total = total_tokens_saved
-
-        # Freshness: 100% if active in last 5 min, decays to 0% over 60 min
-        if newest_mtime > 0:
-            elapsed_min = (time.time() - newest_mtime) / 60
-            freshness = max(0, round(100 - (elapsed_min / 60 * 100)))
-        else:
-            freshness = 0
-
-        if freshness > 0:
-            if elapsed_min < 1:
-                freshness_label = "just now"
-            elif elapsed_min < 60:
-                freshness_label = f"{int(elapsed_min)}m ago"
-            else:
-                freshness_label = f"{int(elapsed_min / 60)}h ago"
-        else:
-            freshness_label = "idle"
-
-        return {
-            "active": docs_indexed > 0 or total_tokens_saved > 0,
-            "total_saved": total_tokens_saved,
-            "docs_indexed": docs_indexed,
-            "index_size_mb": index_size_mb,
-            "version": version,
-            "history": list(_jdocmunch_history),
-            "freshness": freshness,
-            "freshness_label": freshness_label,
-        }
-    except Exception:
-        return None
-
-
 def collect_claude_usage(stats_raw=None):
     """Pull Claude subscription window values from Headroom's /stats endpoint.
 
@@ -643,8 +430,7 @@ WEEKLY_CACHE_SCHEMA_VERSION = 3
 # totals. Whenever collect_all's combined_saved computation changes, update
 # this string — existing caches will auto-rebase on next load.
 COMBINED_SAVED_DEFINITION = (
-    "headroom:lifetime_saved||total_saved;rtk:total_saved;"
-    "jcodemunch:total_saved;jdocmunch:total_saved"
+    "headroom:lifetime_saved||total_saved;rtk:total_saved"
 )
 
 
@@ -855,13 +641,9 @@ def _flatten_snapshot(snap):
 
     rtk = snap.get("rtk") or {}
     headroom = snap.get("headroom") or {}
-    jcm = snap.get("jcodemunch") or {}
-    jdm = snap.get("jdocmunch") or {}
 
     spark_rtk = sparklines.get("rtk") or {}
     spark_hr = sparklines.get("headroom") or {}
-    spark_jcm = sparklines.get("jcodemunch") or {}
-    spark_jdm = sparklines.get("jdocmunch") or {}
 
     claude_active = bool(claude.get("active"))
     # claude_usage_health lets statusline consumers distinguish "no data ever
@@ -893,11 +675,7 @@ def _flatten_snapshot(snap):
     )
     combined_saved_usd = None
     if usd_per_token is not None:
-        non_headroom_tokens = (
-            (rtk.get("total_saved") or 0)
-            + (jcm.get("total_saved") or 0)
-            + (jdm.get("total_saved") or 0)
-        )
+        non_headroom_tokens = rtk.get("total_saved") or 0
         combined_saved_usd = hr_lifetime_usd + non_headroom_tokens * usd_per_token
 
     return {
@@ -951,26 +729,6 @@ def _flatten_snapshot(snap):
         "headroom_requests_failed": headroom.get("requests_failed", 0),
         "headroom_avg_latency_ms": headroom.get("avg_latency_ms", 0),
 
-        "jcodemunch_active": jcm.get("active", False),
-        "jcodemunch_health": jcm.get("health", "error"),
-        "jcodemunch_version": jcm.get("version", "unknown"),
-        "jcodemunch_saved": jcm.get("total_saved", 0),
-        "jcodemunch_delta": spark_jcm.get("delta", 0),
-        "jcodemunch_repos_indexed": jcm.get("repos_indexed", 0),
-        "jcodemunch_index_size_mb": jcm.get("index_size_mb", 0),
-        "jcodemunch_freshness": jcm.get("freshness", 0),
-        "jcodemunch_freshness_label": jcm.get("freshness_label", "idle"),
-
-        "jdocmunch_active": jdm.get("active", False),
-        "jdocmunch_health": jdm.get("health", "error"),
-        "jdocmunch_version": jdm.get("version", "unknown"),
-        "jdocmunch_saved": jdm.get("total_saved", 0),
-        "jdocmunch_delta": spark_jdm.get("delta", 0),
-        "jdocmunch_docs_indexed": jdm.get("docs_indexed", 0),
-        "jdocmunch_index_size_mb": jdm.get("index_size_mb", 0),
-        "jdocmunch_freshness": jdm.get("freshness", 0),
-        "jdocmunch_freshness_label": jdm.get("freshness_label", "idle"),
-
         "extra_usage_enabled": bool(_claude("extra_usage_enabled")),
         "extra_usage_monthly_limit": _claude("extra_usage_monthly_limit"),
         "extra_usage_used": _claude("extra_usage_used"),
@@ -996,8 +754,6 @@ def collect_all():
     collectors = {
         "rtk": collect_rtk,
         "headroom": lambda: collect_headroom(stats_raw=headroom_stats_raw),
-        "jcodemunch": collect_jcodemunch,
-        "jdocmunch": collect_jdocmunch,
     }
 
     results = {}
@@ -1134,10 +890,6 @@ def collect_all():
         history.extend(results["rtk"]["history"])
     if "history" in results.get("headroom", {}):
         history.extend(results["headroom"]["history"])
-    if "history" in results.get("jcodemunch", {}):
-        history.extend(results["jcodemunch"]["history"])
-    if "history" in results.get("jdocmunch", {}):
-        history.extend(results["jdocmunch"]["history"])
 
     # Sort by time descending, collapse bursts, limit to 50
     history.sort(key=lambda x: x.get("time", ""), reverse=True)
@@ -1149,7 +901,7 @@ def collect_all():
     # rather than popping in-place — the same tool dict is stored in
     # _last_good by reference, and mutating it would strip history from the
     # fallback cache and empty the feed on the next transient failure.
-    for tool_name in ("rtk", "headroom", "jcodemunch", "jdocmunch"):
+    for tool_name in ("rtk", "headroom"):
         trimmed = dict(results[tool_name])
         trimmed.pop("history", None)
         results[tool_name] = trimmed
@@ -1162,8 +914,6 @@ def collect_all():
         "combined_saved": combined_saved,
         "rtk": results["rtk"],
         "headroom": results["headroom"],
-        "jcodemunch": results["jcodemunch"],
-        "jdocmunch": results["jdocmunch"],
         "sparklines": sparklines,
         "history": history,
         "claude_usage": claude_usage or {"active": False},

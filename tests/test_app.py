@@ -54,24 +54,6 @@ CONTRACT_KEYS = [
     "headroom_requests_total",
     "headroom_requests_failed",
     "headroom_avg_latency_ms",
-    "jcodemunch_active",
-    "jcodemunch_health",
-    "jcodemunch_version",
-    "jcodemunch_saved",
-    "jcodemunch_delta",
-    "jcodemunch_repos_indexed",
-    "jcodemunch_index_size_mb",
-    "jcodemunch_freshness",
-    "jcodemunch_freshness_label",
-    "jdocmunch_active",
-    "jdocmunch_health",
-    "jdocmunch_version",
-    "jdocmunch_saved",
-    "jdocmunch_delta",
-    "jdocmunch_docs_indexed",
-    "jdocmunch_index_size_mb",
-    "jdocmunch_freshness",
-    "jdocmunch_freshness_label",
     "extra_usage_enabled",
     "extra_usage_monthly_limit",
     "extra_usage_used",
@@ -117,7 +99,7 @@ def test_flatten_snapshot_none_returns_ready_false():
     assert flat["week_is_fresh"] is False
 
     # Each tool's common fields
-    for tool in ("rtk", "headroom", "jcodemunch", "jdocmunch"):
+    for tool in ("rtk", "headroom"):
         assert flat[f"{tool}_active"] is False
         assert flat[f"{tool}_health"] == "error"
         assert flat[f"{tool}_version"] == "unknown"
@@ -139,20 +121,21 @@ def test_flatten_snapshot_none_returns_ready_false():
     assert flat["headroom_requests_failed"] == 0
     assert flat["headroom_avg_latency_ms"] == 0
 
-    assert flat["jcodemunch_repos_indexed"] == 0
-    assert flat["jcodemunch_index_size_mb"] == 0
-    assert flat["jcodemunch_freshness"] == 0
-    assert flat["jcodemunch_freshness_label"] == "idle"
-    assert flat["jdocmunch_docs_indexed"] == 0
-    assert flat["jdocmunch_index_size_mb"] == 0
-    assert flat["jdocmunch_freshness"] == 0
-    assert flat["jdocmunch_freshness_label"] == "idle"
-
     # extra_usage defaults when not ready
     assert flat["extra_usage_enabled"] is False
     assert flat["extra_usage_monthly_limit"] is None
     assert flat["extra_usage_used"] is None
     assert flat["extra_usage_pct"] is None
+
+
+def test_flatten_snapshot_has_no_jcode_jdoc_keys():
+    """_flatten_snapshot must not produce any jcodemunch or jdocmunch keys."""
+    import app
+
+    flat = app._flatten_snapshot(None)
+
+    jcode_keys = [k for k in flat if "jcodemunch" in k or "jdocmunch" in k]
+    assert jcode_keys == [], f"unexpected keys: {jcode_keys}"
 
 
 # Hand-built "full" snapshot used by several tests below. Every field the
@@ -208,31 +191,9 @@ FULL_SNAP = {
         "requests_failed": 0,
         "avg_latency_ms": 7477.5,
     },
-    "jcodemunch": {
-        "active": True,
-        "health": "ok",
-        "version": "2.1.0",
-        "total_saved": 20000,
-        "repos_indexed": 12,
-        "index_size_mb": 48.3,
-        "freshness": 87,
-        "freshness_label": "3m ago",
-    },
-    "jdocmunch": {
-        "active": True,
-        "health": "ok",
-        "version": "1.0.0",
-        "total_saved": 13456,
-        "docs_indexed": 5,
-        "index_size_mb": 4.1,
-        "freshness": 40,
-        "freshness_label": "24m ago",
-    },
     "sparklines": {
         "rtk": {"delta": 42, "points": []},
         "headroom": {"delta": 10, "points": []},
-        "jcodemunch": {"delta": 0, "points": []},
-        "jdocmunch": {"delta": 0, "points": []},
     },
 }
 
@@ -260,8 +221,8 @@ def test_flatten_snapshot_full_payload():
 
     # Combined/weekly savings
     assert flat["combined_saved"] == 123456
-    # rate = 584.41 / 117309038; combined_usd = 584.41 + (50000+20000+13456)*rate
-    assert flat["combined_saved_usd"] == pytest.approx(584.41 + 83456 * (584.41 / 117309038))
+    # rate = 584.41 / 117309038; combined_usd = 584.41 + rtk_saved*rate
+    assert flat["combined_saved_usd"] == pytest.approx(584.41 + 50000 * (584.41 / 117309038))
     assert flat["this_week_saved"] == 8000
     assert flat["last_week_saved"] == 12000
     assert flat["burn_rate_daily"] == 1200
@@ -283,28 +244,6 @@ def test_flatten_snapshot_full_payload():
     assert flat["headroom_saved"] == 40000
     assert flat["headroom_delta"] == 10
     assert flat["headroom_sessions"] == 3
-
-    # jcodemunch
-    assert flat["jcodemunch_active"] is True
-    assert flat["jcodemunch_health"] == "ok"
-    assert flat["jcodemunch_version"] == "2.1.0"
-    assert flat["jcodemunch_saved"] == 20000
-    assert flat["jcodemunch_delta"] == 0
-    assert flat["jcodemunch_repos_indexed"] == 12
-    assert flat["jcodemunch_index_size_mb"] == 48.3
-    assert flat["jcodemunch_freshness"] == 87
-    assert flat["jcodemunch_freshness_label"] == "3m ago"
-
-    # jdocmunch
-    assert flat["jdocmunch_active"] is True
-    assert flat["jdocmunch_health"] == "ok"
-    assert flat["jdocmunch_version"] == "1.0.0"
-    assert flat["jdocmunch_saved"] == 13456
-    assert flat["jdocmunch_delta"] == 0
-    assert flat["jdocmunch_docs_indexed"] == 5
-    assert flat["jdocmunch_index_size_mb"] == 4.1
-    assert flat["jdocmunch_freshness"] == 40
-    assert flat["jdocmunch_freshness_label"] == "24m ago"
 
     # extra_usage
     assert flat["extra_usage_enabled"] is True
@@ -359,8 +298,6 @@ def test_flatten_snapshot_missing_sparklines():
 
     assert flat["rtk_delta"] == 0
     assert flat["headroom_delta"] == 0
-    assert flat["jcodemunch_delta"] == 0
-    assert flat["jdocmunch_delta"] == 0
     # Other rtk fields still work
     assert flat["rtk_saved"] == 50000
 
@@ -426,7 +363,7 @@ def test_status_route_happy_path(monkeypatch):
     assert body["session_pct"] == 42
     assert body["combined_saved"] == 123456
     assert body["rtk_saved"] == 50000
-    assert body["jcodemunch_freshness_label"] == "3m ago"
+    assert body["headroom_lifetime_saved"] == 117309038
 
 
 def test_status_route_not_ready(monkeypatch):
@@ -502,8 +439,6 @@ def test_flatten_snapshot_no_usd_when_headroom_usd_missing():
             "lifetime_saved_usd": 0,
         },
         "rtk": {"active": True, "total_saved": 50000, "health": "ok", "version": "0.3.1"},
-        "jcodemunch": {"active": False, "health": "error", "version": "unknown", "total_saved": 0},
-        "jdocmunch": {"active": False, "health": "error", "version": "unknown", "total_saved": 0},
         "claude_usage": {"active": False},
         "weekly": {},
         "sparklines": {},
@@ -807,7 +742,7 @@ def test_collect_claude_usage_returns_last_good_on_transient_failure(monkeypatch
     on a big proxy request) must not blank the dashboard — return the
     previously cached payload instead.
 
-    This matches the last-good pattern collect_headroom/rtk/jcodemunch use
+    This matches the last-good pattern collect_headroom/rtk use
     via _last_good in collect_all, so the Claude Usage card stops flickering
     to '--' every time Headroom hiccups.
     """
@@ -1193,8 +1128,6 @@ def test_collect_all_fetches_headroom_stats_once_per_cycle(monkeypatch, tmp_path
 
     monkeypatch.setattr(app, "urlopen", _fake_urlopen)
     monkeypatch.setattr(app, "collect_rtk", lambda: {"active": False})
-    monkeypatch.setattr(app, "collect_jcodemunch", lambda: {"active": False})
-    monkeypatch.setattr(app, "collect_jdocmunch", lambda: {"active": False})
 
     app.collect_all()
 
@@ -1352,8 +1285,6 @@ def test_sparkline_buffer_uses_lifetime_saved_for_headroom(monkeypatch, tmp_path
 
     # Silence everything except headroom.
     monkeypatch.setattr(app, "collect_rtk", lambda: {"active": False})
-    monkeypatch.setattr(app, "collect_jcodemunch", lambda: {"active": False})
-    monkeypatch.setattr(app, "collect_jdocmunch", lambda: {"active": False})
     monkeypatch.setattr(app, "collect_claude_usage",
                         lambda stats_raw=None: {"active": False})
     monkeypatch.setattr(app, "_fetch_headroom_stats_raw", lambda: None)
