@@ -5,7 +5,7 @@
 [![Docker Hub](https://img.shields.io/docker/v/willluck/claude-tools-dashboard?logo=docker&logoColor=white&label=Docker%20Hub)](https://hub.docker.com/r/willluck/claude-tools-dashboard)
 [![GHCR](https://img.shields.io/badge/ghcr.io-available-2496ed?logo=github&logoColor=white)](https://ghcr.io/will-luck/claude-tools-dashboard)
 
-Live wallboard for monitoring token savings across your Claude Code toolchain. Tracks [RTK](https://github.com/reachingforthejack/rtk), [Headroom](https://github.com/chopratejas/headroom), [jCodeMunch](https://github.com/jgravelle/jcodemunch-mcp), and [jDocMunch](https://github.com/jgravelle/jdocmunch-mcp) in a single-page dashboard with real-time SSE updates.
+Live wallboard for monitoring token savings across your Claude Code toolchain — RTK and Headroom.
 
 ![Dashboard](screenshots/dashboard-full.png)
 
@@ -13,10 +13,8 @@ Live wallboard for monitoring token savings across your Claude Code toolchain. T
 
 - **RTK** -- command-level token savings from the CLI proxy (SQLite)
 - **Headroom** -- context compression stats from the MCP server (HTTP API)
-- **jCodeMunch** -- indexed repos and session savings (filesystem + MCP)
-- **jDocMunch** -- documentation indexing and section retrieval savings (filesystem)
 - **Combined total** with sparkline trends and live activity feed
-- **Stats ticker** -- weekly savings breakdown, daily burn rate, Claude usage percentages (5-hour, weekly, Sonnet), and reset countdown (reads Claude Code credentials directly, no extra tools needed)
+- **Stats ticker** -- weekly savings breakdown, daily burn rate, Claude usage percentages (5-hour, weekly, Sonnet), and reset countdown (sourced from Headroom's `subscription_window` stats -- no Claude credentials needed)
 
 ## Quick start
 
@@ -38,7 +36,6 @@ docker run -d --name claude-tools-dashboard \
   -v ~/.local/share/rtk:/root/.local/share/rtk:ro \
   -v ~/.code-index:/root/.code-index:ro \
   -v ~/.doc-index:/root/.doc-index:ro \
-  -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
   --network host \
   willluck/claude-tools-dashboard
 
@@ -55,12 +52,11 @@ docker run -d --name claude-tools-dashboard \
   -v ~/.local/share/rtk:/root/.local/share/rtk:ro \
   -v ~/.code-index:/root/.code-index:ro \
   -v ~/.doc-index:/root/.doc-index:ro \
-  -v ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro \
   --network host \
   claude-tools-dashboard
 ```
 
-Use `--network host` so the container can reach the Headroom proxy on localhost. Alternatively, set `HEADROOM_URL` to point at the host IP. The credentials mount is optional -- without it, the usage ticker just shows dashes.
+Use `--network host` so the container can reach the Headroom proxy on localhost. Alternatively, set `HEADROOM_URL` to point at the host IP. Claude usage data (5-hour / weekly / Sonnet percentages and reset countdown) is pulled from Headroom's `/stats` endpoint -- no Claude credentials mount required.
 
 ## Configuration
 
@@ -72,11 +68,7 @@ All settings via environment variables. Copy `.env.example` for reference:
 | `HEADROOM_URL` | `http://127.0.0.1:8787` | Headroom proxy stats endpoint |
 | `RTK_DB_PATH` | `~/.local/share/rtk/history.db` | RTK SQLite database |
 | `RTK_BIN` | `rtk` | Path to RTK binary |
-| `JCODEMUNCH_INDEX_DIR` | `~/.code-index` | jCodeMunch index directory |
-| `JDOCMUNCH_INDEX_DIR` | `~/.doc-index` | jDocMunch index directory |
-| `JCODEMUNCH_BIN` | `jcodemunch-mcp` | Path to jCodeMunch binary |
 | `SSE_INTERVAL` | `30` | Seconds between SSE pushes |
-| `CLAUDE_CREDENTIALS` | `~/.claude/.credentials.json` | Claude Code credentials (for usage API) |
 | `WEEKLY_CACHE_DIR` | `~/.cache/claude-tools-dashboard` | Weekly savings snapshot directory |
 
 ## API
@@ -93,11 +85,23 @@ Single-file Flask app (`app.py`) that:
 
 1. Polls RTK's SQLite database for command history and savings
 2. Queries Headroom's HTTP stats API for compression data
-3. Reads jCodeMunch index files for repo and session metrics
-4. Pushes aggregated state to connected browsers via SSE
+3. Pushes aggregated state to connected browsers via SSE
 5. Serves a self-contained HTML/CSS/JS dashboard (no build step)
 
 The frontend uses vanilla JS with CSS custom properties for theming. Sparkline charts are drawn with inline SVG. No external dependencies beyond Flask.
+
+## Tests
+
+Install dev dependencies and run pytest from the repo root:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+The test suite covers the `_flatten_snapshot` helper contract and the
+`GET /api/status` route. It does not exercise the individual
+`collect_*` functions or the background collector thread.
 
 ## License
 

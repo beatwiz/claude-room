@@ -1,4 +1,4 @@
-"""Claude Tools Dashboard -- Flask backend with SSE streaming."""
+"""Claude Room Dashboard -- Flask backend with SSE streaming."""
 
 import json
 import os
@@ -26,42 +26,39 @@ HOME = os.path.expanduser("~")
 HEADROOM_URL = os.environ.get("HEADROOM_URL", "http://127.0.0.1:8787")
 RTK_DB_PATH = os.environ.get("RTK_DB_PATH", os.path.join(HOME, ".local", "share", "rtk", "history.db"))
 RTK_BIN = os.environ.get("RTK_BIN", "rtk")
-JCODEMUNCH_INDEX_DIR = os.environ.get("JCODEMUNCH_INDEX_DIR", os.path.join(HOME, ".code-index"))
-JCODEMUNCH_BIN = os.environ.get("JCODEMUNCH_BIN", "jcodemunch-mcp")
-JDOCMUNCH_INDEX_DIR = os.environ.get("JDOCMUNCH_INDEX_DIR", os.path.join(HOME, ".doc-index"))
-JDOCMUNCH_BIN = os.environ.get("JDOCMUNCH_BIN", "jdocmunch-mcp")
 PORT = int(os.environ.get("PORT", "8095"))
 SSE_INTERVAL = int(os.environ.get("SSE_INTERVAL", "2"))
 COLLECTOR_INTERVAL = float(os.environ.get("COLLECTOR_INTERVAL", "0.25"))
-CLAUDE_CREDENTIALS = os.environ.get("CLAUDE_CREDENTIALS", os.path.join(HOME, ".claude", ".credentials.json"))
-USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
-USAGE_POLL_INTERVAL = 180  # 3 minutes, same as ccstatusline
-USAGE_BACKOFF = 300  # 5 minutes on 429
 WEEKLY_CACHE_DIR = os.environ.get("WEEKLY_CACHE_DIR", os.path.join(HOME, ".cache", "claude-tools-dashboard"))
+
+# When Headroom's subscription_window poller hasn't refreshed in this long,
+# the Claude Usage card is surfaced as "stale" instead of "ok" so the user
+# can tell when upstream credentials expired or the poller stalled, rather
+# than staring at a forever-green card frozen on old percentages.
+CLAUDE_USAGE_STALE_AFTER_SECONDS = 300
+
+
+def _utc_now():
+    """Return current UTC time. Exposed as a helper so tests can freeze time
+    when asserting claude_usage staleness transitions."""
+    return datetime.now(timezone.utc)
 
 # Persistent state for sparklines and fallback
 _last_good = {}
-_usage_cache = None
-_usage_cache_time = 0
+# Last successful claude_usage fetch. Pinned here so that transient Headroom
+# /stats failures (e.g. slow response while Headroom is chewing on a 100k
+# request) don't flash the Claude Usage card to "--" between ticks — we keep
+# showing the previous numbers until a fresh successful fetch arrives.
+_claude_usage_last_good = None
 _sparkline_buffers = {
-    "rtk": deque(maxlen=60),
-    "headroom": deque(maxlen=60),
-    "jcodemunch": deque(maxlen=60),
-    "jdocmunch": deque(maxlen=60),
+    "rtk": deque(maxlen=240),
+    "headroom": deque(maxlen=240),
 }
 _headroom_last_total = 0
 _headroom_history = []
-_jcodemunch_last_total = 0
-_jcodemunch_last_mtime = 0
-_jcodemunch_history = []
-_jdocmunch_last_total = 0
-_jdocmunch_last_mtime = 0
-_jdocmunch_history = []
 _last_collect_success = {
     "rtk": 0.0,
     "headroom": 0.0,
-    "jcodemunch": 0.0,
-    "jdocmunch": 0.0,
 }
 
 # Cached version strings. resolve_versions_once() populates this at module
@@ -69,29 +66,14 @@ _last_collect_success = {
 # on the hot path.
 _cached_versions = {
     "rtk": None,
-    "jcodemunch": None,
-    "jdocmunch": None,
 }
 
 
 def resolve_versions_once():
-    """Resolve tool versions once. Called by DashboardCollector.run() at thread startup."""
-    rtk_v = _run([RTK_BIN, "--version"])
+    """Resolve tool versions once. Called by DashboardCollector.run() at thread startup.
+    Per-tool precedence: TOOL_VERSION env var > binary --version > "unknown"."""
+    rtk_v = os.environ.get("RTK_VERSION") or _run([RTK_BIN, "--version"])
     _cached_versions["rtk"] = rtk_v if rtk_v else "unknown"
-
-    jc_v = _run([JCODEMUNCH_BIN, "--version"])
-    _cached_versions["jcodemunch"] = jc_v if jc_v else "unknown"
-
-    jd_v = _run([JDOCMUNCH_BIN, "--version"])
-    if not jd_v:
-        raw = _run(["pipx", "list", "--short"])
-        if raw:
-            for line in raw.splitlines():
-                if "jdocmunch" in line:
-                    parts = line.strip().split()
-                    jd_v = parts[1] if len(parts) > 1 else None
-                    break
-    _cached_versions["jdocmunch"] = jd_v if jd_v else "unknown"
 
 
 def _run(cmd, timeout=2):
@@ -189,303 +171,340 @@ def collect_rtk():
         return None
 
 
-def collect_headroom():
-    """Check headroom proxy stats endpoint."""
+_headroom_version = None
+
+
+def _system_local_tz():
+    """Return the system's local timezone (honors TZ env var in containers)."""
+    return datetime.now().astimezone().tzinfo
+
+
+# Headroom emits some timestamps as naive ISO strings (no tz suffix) even
+# though they represent local wall time where the headroom process is running.
+# We interpret them in this timezone and convert to explicit UTC so the
+# dashboard's string-based sort is chronologically correct and the client
+# can display them consistently. Falls back to system local (TZ env var).
+_HEADROOM_ASSUMED_TZ = _system_local_tz()
+
+
+def _normalize_iso_ts(ts, assumed_tz):
+    """Return `ts` as an explicit-UTC ISO string.
+
+    - Already has tzinfo → converted to UTC, offset re-emitted as `+00:00`.
+    - Naive → treated as wall-clock in `assumed_tz`, then converted to UTC.
+    - Unparseable or empty → returned unchanged.
+    """
+    if not ts:
+        return ts
     try:
-        # Get version from /health (fast) instead of CLI (3.6s ONNX init)
-        version = "unknown"
-        try:
-            hresp = urlopen(f"{HEADROOM_URL}/health", timeout=2)
-            hdata = json.loads(hresp.read().decode())
-            version = hdata.get("version", "unknown")
-        except (URLError, OSError, json.JSONDecodeError) as e:
-            print(f"[headroom] /health failed: {e}", flush=True)
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return ts
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=assumed_tz)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _format_headroom_recent_requests(entries):
+    """Convert proxy request logs into dashboard feed rows."""
+    history = []
+    for entry in entries or []:
+        model = entry.get("model") or "unknown"
+        original = int(entry.get("input_tokens_original") or 0)
+        optimized = int(entry.get("input_tokens_optimized") or 0)
+        saved_tokens = int(entry.get("tokens_saved") or 0)
+        saved_pct = round(entry.get("savings_percent") or 0, 1)
+
+        if model.startswith("passthrough:"):
+            cmd = model.replace("passthrough:", "", 1) + " passthrough"
+        elif original > 0 and optimized > 0 and original != optimized:
+            cmd = f"{model} {original:,} -> {optimized:,} tokens"
+        elif original > 0:
+            cmd = f"{model} {original:,} input tokens"
+        else:
+            cmd = f"{model} request"
+
+        raw_ts = entry.get("timestamp")
+        ts = _normalize_iso_ts(raw_ts, _HEADROOM_ASSUMED_TZ) if raw_ts else datetime.now(timezone.utc).isoformat()
+
+        history.append({
+            "time": ts,
+            "tool": "headroom",
+            "cmd": cmd,
+            "saved_tokens": saved_tokens,
+            "saved_pct": saved_pct,
+        })
+    return history
+
+
+def _fetch_headroom_stats_raw():
+    """Fetch raw Headroom /stats JSON once. Shared between collect_headroom
+    and collect_claude_usage so collect_all only issues one /stats request
+    per tick instead of two. Returns None on failure (URLError, timeout,
+    malformed JSON) — callers fall back to their own handling."""
+    try:
+        resp = urlopen(f"{HEADROOM_URL}/stats", timeout=2)
+        return json.loads(resp.read().decode())
+    except (URLError, OSError, json.JSONDecodeError):
+        return None
+
+
+def collect_headroom(stats_raw=None):
+    """Check headroom proxy stats endpoint.
+
+    When stats_raw is provided (by collect_all sharing a single /stats fetch
+    across the tick), parse it directly instead of hitting the endpoint
+    again. Otherwise, fall back to the standalone fetch path so tests and
+    direct callers keep working.
+    """
+    try:
+        global _headroom_version, _headroom_last_total, _headroom_history
+        if _headroom_version is None:
+            _headroom_version = os.environ.get("HEADROOM_VERSION")
+        if _headroom_version is None:
+            try:
+                hresp = urlopen(f"{HEADROOM_URL}/health", timeout=2)
+                hdata = json.loads(hresp.read().decode())
+                v = hdata.get("version")
+                if v:
+                    _headroom_version = v
+            except (URLError, OSError, json.JSONDecodeError):
+                pass
+        version = _headroom_version or "unknown"
 
         try:
-            resp = urlopen(f"{HEADROOM_URL}/stats", timeout=2)
-            data = json.loads(resp.read().decode())
+            raw = stats_raw if stats_raw is not None else _fetch_headroom_stats_raw()
+            if raw is None:
+                raise URLError("shared /stats fetch returned None")
 
-            # Map nested headroom fields to the flat names the frontend expects
-            savings = data.get("savings", {})
-            tokens = data.get("tokens", {})
-            cache = data.get("compression_cache", {})
+            tokens_section = raw.get("tokens") or {}
+            cache_section = raw.get("compression_cache") or {}
+            display = raw.get("display_session") or {}
+            persist = (raw.get("persistent_savings") or {}).get("lifetime") or {}
+            req_stats = raw.get("requests") or {}
+            latency = raw.get("latency") or {}
+            prefix_totals = ((raw.get("prefix_cache") or {}).get("totals") or {})
+            recent_requests = raw.get("recent_requests") or []
 
-            data["active"] = True
-            data["version"] = version or "unknown"
-            # Use compression-only savings (not savings.total_tokens which includes RTK)
-            data["total_saved"] = tokens.get("saved", 0)
-            data["sessions"] = cache.get("active_sessions", 0)
-            data["avg_savings_pct"] = round(tokens.get("savings_percent", 0), 1)
-            data["compression_ratio"] = data["avg_savings_pct"]
+            total_saved = tokens_section.get("saved") or 0
+            lifetime_saved = persist.get("tokens_saved") or 0
+            avg_pct = round(tokens_section.get("savings_percent") or 0, 1)
 
-            # Accumulate headroom events in a rolling buffer
-            global _headroom_last_total, _headroom_history
-            current_total = data["total_saved"]
-            if _headroom_last_total > 0 and current_total > _headroom_last_total:
-                delta = current_total - _headroom_last_total
+            # Track delta against `lifetime_saved` — the same counter the
+            # Headroom card's headline displays. `total_saved` resets when
+            # Headroom restarts, which would otherwise produce giant negative
+            # jumps (or, with the gate below, a silent drop where lifetime
+            # keeps rising but no activity entries appear for a while).
+            delta_source = lifetime_saved if lifetime_saved > 0 else total_saved
+            if _headroom_last_total > 0 and delta_source > _headroom_last_total:
+                delta = delta_source - _headroom_last_total
+                if avg_pct and avg_pct > 0:
+                    input_est = int(round(delta / (avg_pct / 100)))
+                    output_est = max(0, input_est - delta)
+                    cmd_text = f"compressed {input_est:,} → {output_est:,} tokens"
+                else:
+                    cmd_text = "compression event"
                 _headroom_history.append({
                     "time": datetime.now(timezone.utc).isoformat(),
                     "tool": "headroom",
-                    "cmd": f"compressed {delta:,} tokens",
+                    "cmd": cmd_text,
                     "saved_tokens": delta,
-                    "saved_pct": data["avg_savings_pct"],
+                    "saved_pct": avg_pct,
                 })
-                _headroom_history = _headroom_history[-100:]  # keep last 100
-            _headroom_last_total = current_total
-            data["history"] = list(_headroom_history)
+                _headroom_history = _headroom_history[-100:]
+            _headroom_last_total = delta_source
 
-            return data
-        except (URLError, OSError, json.JSONDecodeError):
+            # Prefer our own _headroom_history (built from delta-on-total_saved
+            # every tick, so it captures every compression event). Fall back to
+            # recent_requests only when we haven't accumulated our own history
+            # yet -- upstream's recent_requests is a tiny ring buffer that can
+            # go stale for long stretches while activity keeps flowing.
+            if _headroom_history:
+                history = list(_headroom_history)
+            else:
+                history = _format_headroom_recent_requests(recent_requests)
+
             return {
-                "active": False,
-                "version": version or "unknown",
+                "active": True,
+                "version": version,
+                "total_saved": total_saved,
+                "avg_savings_pct": avg_pct,
+                "sessions": cache_section.get("active_sessions", 0),
+                "session_saved": display.get("tokens_saved", 0),
+                "lifetime_saved": persist.get("tokens_saved", 0),
+                "session_saved_usd": display.get("compression_savings_usd", 0),
+                "lifetime_saved_usd": persist.get("compression_savings_usd", 0),
+                "cache_hit_rate": round(prefix_totals.get("hit_rate") or 0, 1),
+                "requests_total": req_stats.get("total") or 0,
+                "requests_failed": req_stats.get("failed") or 0,
+                "avg_latency_ms": round(latency.get("average_ms") or 0, 1),
+                "history": history,
             }
-    except Exception:
-        return None
-
-
-def collect_jcodemunch():
-    """Read jcodemunch savings and index stats."""
-    try:
-        index_dir = JCODEMUNCH_INDEX_DIR
-        if not os.path.isdir(index_dir):
+        except (URLError, OSError, json.JSONDecodeError):
+            # Return None so collect_all() falls back to _last_good instead of
+            # overwriting it with a stub that lacks total_saved/lifetime_saved.
+            # A stub would drop headroom's contribution from combined_saved on
+            # every transient error, making this_week flap negative.
             return None
-
-        savings_path = os.path.join(index_dir, "_savings.json")
-        total_tokens_saved = 0
-        if os.path.exists(savings_path):
-            with open(savings_path) as f:
-                data = json.load(f)
-            total_tokens_saved = data.get("total_tokens_saved", 0)
-
-        # Count .db files and sum sizes
-        index_dir = JCODEMUNCH_INDEX_DIR
-        db_files = glob.glob(os.path.join(index_dir, "*.db"))
-        repos_indexed = len(db_files)
-        index_size_bytes = sum(os.path.getsize(f) for f in db_files if os.path.exists(f))
-        index_size_mb = round(index_size_bytes / (1024 * 1024), 1)
-
-        version = _cached_versions.get("jcodemunch") or "unknown"
-
-        # Detect activity via the newest mtime across session_stats.json, _savings.json,
-        # and all per-repo .db files. jcodemunch-mcp flushes these at different times
-        # (neither file updates on every MCP call), so watching the max catches more events.
-        global _jcodemunch_last_total, _jcodemunch_last_mtime, _jcodemunch_history
-        stats_path = os.path.join(index_dir, "session_stats.json")
-        watched_paths = [stats_path, savings_path, *db_files]
-        newest_mtime = max(
-            (os.path.getmtime(p) for p in watched_paths if os.path.exists(p)),
-            default=0,
-        )
-        if newest_mtime > _jcodemunch_last_mtime and _jcodemunch_last_mtime > 0:
-            if total_tokens_saved > _jcodemunch_last_total and _jcodemunch_last_total > 0:
-                delta = total_tokens_saved - _jcodemunch_last_total
-                _jcodemunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jcodemunch",
-                    "cmd": f"indexed/queried -- saved {delta:,} tokens",
-                    "saved_tokens": delta,
-                    "saved_pct": 0,
-                })
-            else:
-                _jcodemunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jcodemunch",
-                    "cmd": f"query across {repos_indexed} repos ({index_size_mb}MB indexed)",
-                    "saved_tokens": 0,
-                    "saved_pct": 0,
-                })
-            _jcodemunch_history = _jcodemunch_history[-100:]
-        _jcodemunch_last_mtime = newest_mtime
-        _jcodemunch_last_total = total_tokens_saved
-
-        # Freshness: 100% if active in last 5 min, decays to 0% over 60 min
-        if newest_mtime > 0:
-            elapsed_min = (time.time() - newest_mtime) / 60
-            freshness = max(0, round(100 - (elapsed_min / 60 * 100)))
-        else:
-            freshness = 0
-
-        if freshness > 0:
-            if elapsed_min < 1:
-                freshness_label = "just now"
-            elif elapsed_min < 60:
-                freshness_label = f"{int(elapsed_min)}m ago"
-            else:
-                freshness_label = f"{int(elapsed_min / 60)}h ago"
-        else:
-            freshness_label = "idle"
-
-        return {
-            "active": repos_indexed > 0 or total_tokens_saved > 0,
-            "total_saved": total_tokens_saved,
-            "repos_indexed": repos_indexed,
-            "index_size_mb": index_size_mb,
-            "version": version or "unknown",
-            "history": list(_jcodemunch_history),
-            "freshness": freshness,
-            "freshness_label": freshness_label,
-        }
     except Exception:
         return None
 
 
-def collect_jdocmunch():
-    global _jdocmunch_last_total, _jdocmunch_last_mtime, _jdocmunch_history
+def _rehealth_claude_usage_fallback():
+    """Return `_claude_usage_last_good` with health re-derived from `polled_at`.
+
+    The cached payload captured health at write time. When /stats fetches
+    later fail, returning that payload verbatim keeps a card green forever
+    even though the underlying data is ancient. Re-evaluate age against
+    CLAUDE_USAGE_STALE_AFTER_SECONDS before serving the fallback so an
+    extended Headroom outage surfaces as `stale`.
+    """
+    if _claude_usage_last_good is None:
+        return {"active": False}
+    cached = dict(_claude_usage_last_good)
+    polled_at = cached.get("polled_at")
+    if not polled_at:
+        cached["health"] = "stale"
+        return cached
     try:
-        index_dir = JDOCMUNCH_INDEX_DIR
-        if not os.path.isdir(index_dir):
-            return None
-
-        savings_path = os.path.join(index_dir, "_savings.json")
-        total_tokens_saved = 0
-        if os.path.exists(savings_path):
-            with open(savings_path) as f:
-                data = json.load(f)
-            total_tokens_saved = data.get("total_tokens_saved", 0)
-
-        index_files = [f for f in glob.glob(os.path.join(index_dir, "local", "*.json"))]
-        docs_indexed = len(index_files)
-        index_size_mb = round(sum(os.path.getsize(f) for f in index_files) / (1024 * 1024), 1)
-
-        # Version (cached at startup)
-        version = _cached_versions.get("jdocmunch") or "unknown"
-
-        # _savings.json updates on every get_section call (token savings).
-        # Index JSON files update on re-index. Check both for activity.
-        savings_mtime = os.path.getmtime(savings_path) if os.path.exists(savings_path) else 0
-        idx_mtime = max(
-            (os.path.getmtime(f) for f in index_files),
-            default=0,
-        )
-        newest_mtime = max(savings_mtime, idx_mtime)
-
-        if newest_mtime > _jdocmunch_last_mtime and _jdocmunch_last_mtime > 0:
-            delta = total_tokens_saved - _jdocmunch_last_total
-            if delta > 0:
-                _jdocmunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jdocmunch",
-                    "cmd": f"indexed/queried -- saved {delta:,} tokens",
-                    "saved_tokens": delta,
-                    "saved_pct": 0,
-                })
-            else:
-                _jdocmunch_history.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "tool": "jdocmunch",
-                    "cmd": f"query across {docs_indexed} docs ({index_size_mb}MB indexed)",
-                    "saved_tokens": 0,
-                    "saved_pct": 0,
-                })
-            _jdocmunch_history = _jdocmunch_history[-100:]
-        _jdocmunch_last_mtime = newest_mtime
-        _jdocmunch_last_total = total_tokens_saved
-
-        # Freshness: 100% if active in last 5 min, decays to 0% over 60 min
-        if newest_mtime > 0:
-            elapsed_min = (time.time() - newest_mtime) / 60
-            freshness = max(0, round(100 - (elapsed_min / 60 * 100)))
-        else:
-            freshness = 0
-
-        if freshness > 0:
-            if elapsed_min < 1:
-                freshness_label = "just now"
-            elif elapsed_min < 60:
-                freshness_label = f"{int(elapsed_min)}m ago"
-            else:
-                freshness_label = f"{int(elapsed_min / 60)}h ago"
-        else:
-            freshness_label = "idle"
-
-        return {
-            "active": docs_indexed > 0 or total_tokens_saved > 0,
-            "total_saved": total_tokens_saved,
-            "docs_indexed": docs_indexed,
-            "index_size_mb": index_size_mb,
-            "version": version,
-            "history": list(_jdocmunch_history),
-            "freshness": freshness,
-            "freshness_label": freshness_label,
-        }
-    except Exception:
-        return None
+        polled_dt = datetime.fromisoformat(polled_at.replace("Z", "+00:00"))
+        if polled_dt.tzinfo is None:
+            polled_dt = polled_dt.replace(tzinfo=timezone.utc)
+        age = (_utc_now() - polled_dt).total_seconds()
+        cached["health"] = "ok" if age <= CLAUDE_USAGE_STALE_AFTER_SECONDS else "stale"
+    except (ValueError, TypeError):
+        cached["health"] = "stale"
+    return cached
 
 
-def _read_oauth_token():
-    """Read Claude Code OAuth access token from credentials file."""
-    try:
-        with open(CLAUDE_CREDENTIALS) as f:
-            creds = json.load(f)
-        return creds.get("claudeAiOauth", {}).get("accessToken")
-    except Exception:
-        return None
+def collect_claude_usage(stats_raw=None):
+    """Pull Claude subscription window values from Headroom's /stats endpoint.
+
+    Headroom already polls https://api.anthropic.com/api/oauth/usage on a
+    sane cadence and caches the result under subscription_window.latest in
+    /stats. We piggyback on its cache instead of hitting Anthropic directly,
+    which means (a) no OAuth token handling here, (b) no per-token rate
+    limit to dodge, (c) one source of truth for "what does Anthropic think
+    my usage is right now".
+
+    When collect_all passes in stats_raw, reuse that payload instead of
+    re-fetching /stats — otherwise we burn 240 extra /stats calls per minute
+    at COLLECTOR_INTERVAL=0.25 and compound timeout stalls whenever Headroom
+    is slow. Direct callers (tests, cold start) leave stats_raw=None and
+    fall back to a standalone fetch.
+
+    Freshness: Headroom's upstream poller can fail silently (expired OAuth
+    token, 4xx from Anthropic, network hiccups). When that happens, the
+    subscription_window.latest values stay frozen from the last good poll.
+    We detect this by comparing latest.polled_at to now; older than
+    CLAUDE_USAGE_STALE_AFTER_SECONDS, and the result carries health="stale"
+    so the dashboard can stop showing the card as forever-green. Missing
+    polled_at (legacy upstream) is also treated as stale — better a false
+    positive than a hidden outage.
+
+    On transient fetch failure returns the last successful payload instead
+    of {"active": False} so the card doesn't flash to "--" between ticks.
+    Cold start with no prior success falls back to {"active": False}.
+    """
+    global _claude_usage_last_good
+
+    raw = stats_raw if stats_raw is not None else _fetch_headroom_stats_raw()
+    if raw is None:
+        return _rehealth_claude_usage_fallback()
+
+    latest = (raw.get("subscription_window") or {}).get("latest") or {}
+    if not latest:
+        return _rehealth_claude_usage_fallback()
+
+    five = latest.get("five_hour") or {}
+    seven = latest.get("seven_day") or {}
+    sonnet = latest.get("seven_day_sonnet") or {}
+    extra = latest.get("extra_usage") or {}
+    extra_enabled = bool(extra.get("is_enabled"))
+
+    polled_at = latest.get("polled_at")
+    health = "stale"
+    if polled_at:
+        try:
+            polled_dt = datetime.fromisoformat(polled_at.replace("Z", "+00:00"))
+            if polled_dt.tzinfo is None:
+                polled_dt = polled_dt.replace(tzinfo=timezone.utc)
+            age = (_utc_now() - polled_dt).total_seconds()
+            health = "ok" if age <= CLAUDE_USAGE_STALE_AFTER_SECONDS else "stale"
+        except (ValueError, TypeError):
+            health = "stale"
+
+    result = {
+        "active": True,
+        "health": health,
+        "polled_at": polled_at,
+        "session_pct": five.get("utilization_pct"),
+        "session_reset": five.get("resets_at"),
+        "weekly_pct": seven.get("utilization_pct"),
+        "weekly_reset": seven.get("resets_at"),
+        "sonnet_pct": sonnet.get("utilization_pct"),
+        "sonnet_reset": sonnet.get("resets_at"),
+        "extra_usage_enabled": extra_enabled,
+        # Units are USD (used_credits_usd / monthly_limit_usd). Previously
+        # when we hit Anthropic direct these were in cents; the frontend's
+        # extra_usage card formats them as dollars now.
+        "extra_usage_monthly_limit": extra.get("monthly_limit_usd") if extra_enabled else None,
+        "extra_usage_used": extra.get("used_credits_usd") if extra_enabled else None,
+        "extra_usage_pct": extra.get("utilization_pct") if extra_enabled else None,
+    }
+    _claude_usage_last_good = result
+    return result
 
 
-def collect_claude_usage():
-    """Fetch Claude usage from Anthropic API with 3-minute cache."""
-    global _usage_cache, _usage_cache_time
+WEEKLY_CACHE_SCHEMA_VERSION = 4
 
-    now = time.time()
-    if _usage_cache and (now - _usage_cache_time) < USAGE_POLL_INTERVAL:
-        return _usage_cache
-
-    token = _read_oauth_token()
-    if not token:
-        return _usage_cache  # return stale cache or None
-
-    try:
-        req = Request(USAGE_API_URL)
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("anthropic-beta", "oauth-2025-04-20")
-        req.add_header("Content-Type", "application/json")
-        with urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-
-        five = data.get("five_hour") or {}
-        seven = data.get("seven_day") or {}
-        sonnet = data.get("seven_day_sonnet") or {}
-
-        result = {
-            "session_pct": five.get("utilization"),
-            "session_reset": five.get("resets_at"),
-            "weekly_pct": seven.get("utilization"),
-            "weekly_reset": seven.get("resets_at"),
-            "sonnet_pct": sonnet.get("utilization"),
-            "sonnet_reset": sonnet.get("resets_at"),
-            "active": True,
-        }
-        _usage_cache = result
-        _usage_cache_time = now
-        return result
-    except HTTPError as e:
-        if e.code == 429:
-            # Back off on rate limit -- extend cache validity
-            _usage_cache_time = now - USAGE_POLL_INTERVAL + USAGE_BACKOFF
-        return _usage_cache
-    except Exception:
-        return _usage_cache
+# Fingerprint of the combined_saved formula used when a baseline is written.
+# Stored inside weekly.json so _load_weekly_cache can detect any future change
+# to the formula and drop the baseline instead of comparing incomparable
+# totals. Whenever collect_all's combined_saved computation changes, update
+# this string — existing caches will auto-rebase on next load.
+COMBINED_SAVED_DEFINITION = (
+    "headroom:lifetime_saved||total_saved;rtk:total_saved"
+)
 
 
 def _load_weekly_cache():
-    """Load weekly savings snapshot from disk."""
+    """Load weekly savings snapshot from disk.
+
+    Pre-v4: dropped. v2 and v3 baselines were written when combined_saved
+    still included jcodemunch + jdocmunch totals; this branch removed both
+    tools from the formula, so their baselines now overstate the starting
+    point and would produce negative / understated this_week_saved until
+    the next reset window.
+
+    v4+: require an exact combined_saved_definition match. A mismatch means
+    the formula changed without a schema bump (or the definition constant
+    was edited); drop the cache so collect_all re-seeds a fresh baseline.
+    """
     path = os.path.join(WEEKLY_CACHE_DIR, "weekly.json")
     try:
-        if os.path.exists(path):
-            with open(path) as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    ver = data.get("schema_version", 1)
+    if ver < WEEKLY_CACHE_SCHEMA_VERSION:
+        return {}
+    if data.get("combined_saved_definition") != COMBINED_SAVED_DEFINITION:
+        return {}
+    return data
 
 
 def _save_weekly_cache(data):
     """Save weekly savings snapshot to disk."""
     os.makedirs(WEEKLY_CACHE_DIR, exist_ok=True)
     path = os.path.join(WEEKLY_CACHE_DIR, "weekly.json")
+    payload = dict(data)
+    payload["schema_version"] = WEEKLY_CACHE_SCHEMA_VERSION
+    payload["combined_saved_definition"] = COMBINED_SAVED_DEFINITION
     with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(payload, f, indent=2)
 
 
 def _group_history(entries):
@@ -563,15 +582,202 @@ def _group_history(entries):
     return grouped
 
 
+def _reset_in_future(iso_ts):
+    """True iff `iso_ts` is a parseable ISO-8601 timestamp strictly in the future.
+
+    Used by _flatten_snapshot to decide whether a cached pct/reset pair still
+    refers to a live reset window. When the Anthropic usage endpoint is rate
+    limited, collect_claude_usage() serves its last successful response
+    indefinitely — but once the reset time has passed, the utilization value
+    refers to a dead window and must be scrubbed before it reaches the UI.
+    """
+    if not iso_ts:
+        return False
+    try:
+        return datetime.fromisoformat(iso_ts) > datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        return False
+
+
+def _format_claude_reset(iso_ts, local_tz=None):
+    """Render an ISO-8601 reset timestamp as a local-time display string.
+
+    Anthropic returns UTC-aware ISO strings. The dashboard must display them
+    in the user's local timezone, otherwise "Tue 18:00 UTC" looks like a
+    different wall-clock time than the official "Tue 7:00 PM" on claude.ai.
+
+    `local_tz` defaults to None, which uses the process's system local tz
+    (honors the TZ env var in containers). Tests can pass an explicit
+    zoneinfo.ZoneInfo to avoid depending on host tz configuration.
+    """
+    if not iso_ts:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_ts)
+        if local_tz is not None:
+            dt = dt.astimezone(local_tz)
+        else:
+            dt = dt.astimezone()
+        return dt.strftime("%a %-d %b %H:%M")
+    except (ValueError, TypeError):
+        return ""
+
+
+def _same_reset_window(a, b, tolerance_seconds=5):
+    """Return True iff two ISO-8601 resets_at timestamps refer to the same reset window.
+
+    Anthropic's usage API returns resets_at with sub-second precision that
+    jitters (observed drift up to ~1s) between calls even within the same
+    week. Compare with an absolute time tolerance so boundary drift (e.g.
+    17:59:59.8 vs 18:00:00.2, which straddles a minute boundary) does not
+    trigger false rotations. A real weekly reset advances the timestamp by
+    7 days, well outside any tolerance this function would use.
+    """
+    if not a or not b:
+        return False
+    try:
+        da = datetime.fromisoformat(a)
+        db = datetime.fromisoformat(b)
+        return abs((da - db).total_seconds()) <= tolerance_seconds
+    except (ValueError, TypeError):
+        return a == b
+
+
+def _flatten_snapshot(snap):
+    """Flatten the collector snapshot to a status-line-friendly dict.
+
+    Contract pinned by tests in tests/test_app.py. Returns a stable
+    45-key shape whether the collector has ticked (snap is a dict) or
+    not (snap is None), and defensively defaults every sub-object so
+    a partial snapshot never raises KeyError.
+
+    Numeric fields default to 0. Booleans default to False. Health
+    defaults to "error", version to "unknown", freshness_label to
+    "idle". Claude usage fields default to None (not zero) so the
+    status line can distinguish "API not fetched" from "zero
+    utilisation".
+    """
+    ready = snap is not None
+    snap = snap or {}
+
+    claude = snap.get("claude_usage") or {}
+    weekly = snap.get("weekly") or {}
+    sparklines = snap.get("sparklines") or {}
+
+    rtk = snap.get("rtk") or {}
+    headroom = snap.get("headroom") or {}
+
+    spark_rtk = sparklines.get("rtk") or {}
+    spark_hr = sparklines.get("headroom") or {}
+
+    claude_active = bool(claude.get("active"))
+    # claude_usage_health lets statusline consumers distinguish "no data ever
+    # seen" (error) from "stale data held open by fallback" (stale) from
+    # "fresh" (ok). Legacy shapes without a health field default to ok iff
+    # active, else error — matches the pre-freshness contract.
+    claude_usage_health = claude.get("health") or (
+        "ok" if claude_active else "error"
+    )
+    claude_usage_polled_at = claude.get("polled_at")
+    # A cached pct only makes sense while its reset window is still in the
+    # future. Once the window rolls over, the cached utilization refers to
+    # a dead window and must be scrubbed — otherwise a rate-limited backend
+    # keeps showing ghost percentages (e.g. 20% from a 5-hour session that
+    # already reset two hours ago).
+    session_valid = claude_active and _reset_in_future(claude.get("session_reset"))
+    weekly_valid = claude_active and _reset_in_future(claude.get("weekly_reset"))
+    sonnet_valid = claude_active and _reset_in_future(claude.get("sonnet_reset"))
+
+    def _claude(key):
+        return claude.get(key) if claude_active else None
+
+    hr_lifetime = headroom.get("lifetime_saved") or 0
+    hr_lifetime_usd = headroom.get("lifetime_saved_usd") or 0
+    usd_per_token = (
+        (hr_lifetime_usd / hr_lifetime)
+        if hr_lifetime > 0 and hr_lifetime_usd > 0
+        else None
+    )
+    combined_saved_usd = None
+    if usd_per_token is not None:
+        non_headroom_tokens = rtk.get("total_saved") or 0
+        combined_saved_usd = hr_lifetime_usd + non_headroom_tokens * usd_per_token
+
+    return {
+        "ready": ready,
+        "timestamp": snap.get("timestamp"),
+
+        "claude_active": claude_active,
+        "session_pct": _claude("session_pct") if session_valid else None,
+        "session_reset": _claude("session_reset") if session_valid else None,
+        "weekly_pct": _claude("weekly_pct") if weekly_valid else None,
+        "weekly_reset": _claude("weekly_reset") if weekly_valid else None,
+        # weekly_reset_display is derived from the same stale cache as
+        # weekly_reset, so scrub it alongside weekly when the window is dead.
+        # When claude_active is False, the display string reflects an earlier
+        # successful fetch and is still the best info we have — pass it through.
+        "weekly_reset_display": (
+            None
+            if (claude_active and not weekly_valid)
+            else (weekly.get("reset_display") or None)
+        ),
+        "sonnet_pct": _claude("sonnet_pct") if sonnet_valid else None,
+        "sonnet_reset": _claude("sonnet_reset") if sonnet_valid else None,
+
+        "combined_saved": snap.get("combined_saved", 0),
+        "combined_saved_usd": combined_saved_usd,
+        "this_week_saved": weekly.get("this_week", 0),
+        "burn_rate_daily": weekly.get("burn_rate_daily", 0),
+        "week_is_fresh": weekly.get("week_is_fresh", False),
+
+        "rtk_active": rtk.get("active", False),
+        "rtk_health": rtk.get("health", "error"),
+        "rtk_version": rtk.get("version", "unknown"),
+        "rtk_saved": rtk.get("total_saved", 0),
+        "rtk_delta": spark_rtk.get("delta", 0),
+        "rtk_commands": rtk.get("total_commands", 0),
+        "rtk_avg_pct": rtk.get("avg_savings_pct", 0),
+
+        "headroom_active": headroom.get("active", False),
+        "headroom_health": headroom.get("health", "error"),
+        "headroom_version": headroom.get("version", "unknown"),
+        "headroom_saved": headroom.get("total_saved", 0),
+        "headroom_delta": spark_hr.get("delta", 0),
+        "headroom_sessions": headroom.get("sessions", 0),
+        "headroom_session_saved": headroom.get("session_saved", 0),
+        "headroom_lifetime_saved": headroom.get("lifetime_saved", 0),
+        "headroom_session_saved_usd": headroom.get("session_saved_usd", 0),
+        "headroom_lifetime_saved_usd": headroom.get("lifetime_saved_usd", 0),
+        "headroom_cache_hit_rate": headroom.get("cache_hit_rate", 0),
+        "headroom_requests_total": headroom.get("requests_total", 0),
+        "headroom_requests_failed": headroom.get("requests_failed", 0),
+        "headroom_avg_latency_ms": headroom.get("avg_latency_ms", 0),
+
+        "extra_usage_enabled": bool(_claude("extra_usage_enabled")),
+        "extra_usage_monthly_limit": _claude("extra_usage_monthly_limit"),
+        "extra_usage_used": _claude("extra_usage_used"),
+        "extra_usage_pct": _claude("extra_usage_pct"),
+
+        "claude_usage_health": claude_usage_health,
+        "claude_usage_polled_at": claude_usage_polled_at,
+    }
+
+
 def collect_all():
     """Collect from all tools, maintain sparklines and fallbacks."""
     global _last_good
 
+    # Fetch Headroom /stats once per tick and share the payload with both
+    # collect_headroom (savings metrics) and collect_claude_usage
+    # (subscription_window poll). Pre-refactor each collector fetched its
+    # own copy, doubling the request rate and compounding stalls when
+    # Headroom was slow. None on failure — each collector has its own
+    # fallback behaviour in that case.
+    headroom_stats_raw = _fetch_headroom_stats_raw()
+
     collectors = {
         "rtk": collect_rtk,
-        "headroom": collect_headroom,
-        "jcodemunch": collect_jcodemunch,
-        "jdocmunch": collect_jdocmunch,
+        "headroom": lambda: collect_headroom(stats_raw=headroom_stats_raw),
     }
 
     results = {}
@@ -594,25 +800,28 @@ def collect_all():
         else:
             results[name]["health"] = "error"
 
-    # Build combined saved total
+    # Build combined saved total.
+    # For headroom, prefer lifetime_saved (persistent across process restarts)
+    # over total_saved (which is the in-memory stats-cycle counter — underreported).
     combined_saved = 0
     for name in collectors:
         tool_data = results[name]
-        combined_saved += tool_data.get("total_saved", 0)
+        if name == "headroom":
+            combined_saved += tool_data.get("lifetime_saved") or tool_data.get("total_saved", 0)
+        else:
+            combined_saved += tool_data.get("total_saved", 0)
 
-    # Weekly savings tracking
-    claude_usage = collect_claude_usage()
+    # Weekly savings tracking — reuse the same /stats payload to avoid a
+    # second HTTP call per tick (Codex P1).
+    claude_usage = collect_claude_usage(stats_raw=headroom_stats_raw)
     weekly_data = _load_weekly_cache()
 
     if claude_usage and claude_usage.get("weekly_reset"):
         fresh_reset = claude_usage["weekly_reset"]
         stored_reset = weekly_data.get("weekly_reset_at", "")
 
-        # Reset has moved forward -- rotate weeks
-        if fresh_reset != stored_reset and stored_reset:
-            baseline = weekly_data.get("current_week_baseline", 0)
-            weekly_data["last_week_savings"] = combined_saved - baseline
-            weekly_data["last_week_end"] = stored_reset
+        # Reset has moved forward -- rotate baseline to the new window
+        if not _same_reset_window(fresh_reset, stored_reset) and stored_reset:
             weekly_data["current_week_baseline"] = combined_saved
             weekly_data["current_week_start"] = stored_reset
             weekly_data["weekly_reset_at"] = fresh_reset
@@ -622,11 +831,9 @@ def collect_all():
             weekly_data["current_week_baseline"] = combined_saved
             weekly_data["current_week_start"] = datetime.now(timezone.utc).isoformat()
             weekly_data["weekly_reset_at"] = fresh_reset
-            weekly_data["last_week_savings"] = 0
             _save_weekly_cache(weekly_data)
 
     this_week_savings = combined_saved - weekly_data.get("current_week_baseline", combined_saved)
-    last_week_savings = weekly_data.get("last_week_savings", 0)
 
     # Burn rate: savings per day this week
     week_start = weekly_data.get("current_week_start")
@@ -649,22 +856,29 @@ def collect_all():
         except (ValueError, TypeError):
             pass
 
-    # Format reset display: "Thu 3 Apr 15:00"
-    reset_display = ""
-    if claude_usage and claude_usage.get("weekly_reset"):
-        try:
-            reset_dt = datetime.fromisoformat(claude_usage["weekly_reset"])
-            reset_display = reset_dt.strftime("%a %-d %b %H:%M")
-        except (ValueError, TypeError):
-            reset_display = ""
+    # Format reset display in the user's local timezone (e.g. "Thu 3 Apr 15:00")
+    reset_display = _format_claude_reset(
+        claude_usage.get("weekly_reset") if claude_usage else None
+    )
 
-    # Update sparkline buffers with cumulative totals
+    # Update sparkline buffers with cumulative totals.
+    # For headroom, feed on lifetime_saved (persistent across container
+    # restarts) instead of total_saved (in-memory stats-cycle counter that
+    # rewinds to zero on restart). Mixing the two counters produced a huge
+    # negative delta whenever Headroom restarted, flattening the spark line.
+    # Align the buffer with the headline combined_saved formula.
     now = time.time()
     for name in collectors:
         tool_data = results[name]
         if not tool_data.get("active"):
             continue
-        cumulative = tool_data.get("total_saved", 0)
+        if name == "headroom":
+            cumulative = (
+                tool_data.get("lifetime_saved")
+                or tool_data.get("total_saved", 0)
+            )
+        else:
+            cumulative = tool_data.get("total_saved", 0)
         _sparkline_buffers[name].append((now, cumulative))
 
     # Compute deltas and sparkline points
@@ -695,31 +909,35 @@ def collect_all():
         history.extend(results["rtk"]["history"])
     if "history" in results.get("headroom", {}):
         history.extend(results["headroom"]["history"])
-    if "history" in results.get("jcodemunch", {}):
-        history.extend(results["jcodemunch"]["history"])
-    if "history" in results.get("jdocmunch", {}):
-        history.extend(results["jdocmunch"]["history"])
 
-    # Sort by time descending, collapse bursts, limit to 100
+    # Sort by time descending, collapse bursts, limit to 50
     history.sort(key=lambda x: x.get("time", ""), reverse=True)
     history = _group_history(history)
-    history = history[:100]
+    history = history[:50]
+
+    # Per-tool history lists are merged into the top-level `history` above,
+    # so drop them to shave ~15KB per SSE tick. Build a new dict per tool
+    # rather than popping in-place — the same tool dict is stored in
+    # _last_good by reference, and mutating it would strip history from the
+    # fallback cache and empty the feed on the next transient failure.
+    for tool_name in ("rtk", "headroom"):
+        trimmed = dict(results[tool_name])
+        trimmed.pop("history", None)
+        results[tool_name] = trimmed
 
     timestamp = datetime.now(timezone.utc).isoformat()
 
     return {
+        "ready": True,
         "timestamp": timestamp,
         "combined_saved": combined_saved,
         "rtk": results["rtk"],
         "headroom": results["headroom"],
-        "jcodemunch": results["jcodemunch"],
-        "jdocmunch": results["jdocmunch"],
         "sparklines": sparklines,
         "history": history,
         "claude_usage": claude_usage or {"active": False},
         "weekly": {
             "this_week": this_week_savings,
-            "last_week": last_week_savings,
             "burn_rate_daily": burn_rate_daily,
             "reset_display": reset_display,
             "week_is_fresh": week_is_fresh,
@@ -774,7 +992,7 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Tools Dashboard</title>
+<title>Claude Room Dashboard</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -809,13 +1027,6 @@ body {
 .header-left:hover .header-title {
     text-shadow: 0 0 6px #00ff88;
 }
-.pulse-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #00ff88;
-    animation: pulse 2s infinite;
-}
 @keyframes pulse {
     0%, 100% { opacity: 1; box-shadow: 0 0 4px #00ff88; }
     50% { opacity: 0.4; box-shadow: 0 0 1px #00ff88; }
@@ -824,14 +1035,6 @@ body {
     color: #00ff88;
     font-size: 16px;
     letter-spacing: 3px;
-    font-weight: bold;
-}
-.header-centre {
-    color: #888;
-    font-size: 13px;
-}
-.header-centre span {
-    color: #00ff88;
     font-weight: bold;
 }
 .header-right {
@@ -859,7 +1062,6 @@ body {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 12px;
-    position: relative;
 }
 .card-name {
     font-size: 12px;
@@ -905,46 +1107,84 @@ body {
 .card-stats .val { color: #aaa; }
 .sparkline-container { margin-bottom: 6px; }
 .sparkline-container svg { width: 100%; height: 35px; }
-.card-delta {
-    font-size: 12px;
-    color: #555;
-}
-.card-delta.active {
-    color: #00ff88;
-    animation: flash 0.5s;
-}
-@keyframes flash {
-    0% { opacity: 0.3; }
-    100% { opacity: 1; }
-}
 
-/* Tool colours */
-.clr-rtk { color: #00ff88; }
-.fill-rtk { background: #00ff88; }
-.stroke-rtk { stroke: #00ff88; }
-.area-rtk { fill: rgba(0, 255, 136, 0.1); }
+/* Combined + Usage card specifics */
+.cards .card-combined .card-value { color: #00ff88; }
+.cards .card-combined .card-stats { gap: 12px; }
+.cards .card-combined .card-stats > span { white-space: nowrap; }
 
-.clr-headroom { color: #00bfff; }
-.fill-headroom { background: #00bfff; }
-.stroke-headroom { stroke: #00bfff; }
-.area-headroom { fill: rgba(0, 191, 255, 0.1); }
+.cards .card-usage .usage-toggle {
+    display: flex;
+    gap: 0;
+    background: #0a0a0a;
+    border: 1px solid #1a1a2e;
+    border-radius: 3px;
+    padding: 2px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.cards .card-usage .usage-toggle button {
+    background: transparent;
+    border: none;
+    color: #666;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    border-radius: 2px;
+}
+.cards .card-usage .usage-toggle button.active {
+    background: #1a1a2e;
+    color: #fff;
+}
+.cards .card-usage .usage-toggle button:disabled {
+    color: #333;
+    cursor: not-allowed;
+}
+.cards .card-usage .usage-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 4px 0;
+    font-size: 13px;
+    color: #aaa;
+}
+.cards .card-usage .usage-row .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.cards .card-usage .usage-row .val { color: #fff; font-weight: 600; font-size: 12px; }
+.cards .card-usage .usage-row .val.pct-green { color: #00ff88; }
+.cards .card-usage .usage-row .val.pct-yellow { color: #ffcc00; }
+.cards .card-usage .usage-row .val.pct-red { color: #ff4444; }
+.cards .card-usage .progress-track { margin-top: 12px; }
+.cards .card-usage .progress-fill.pct-green { background: #00ff88; }
+.cards .card-usage .progress-fill.pct-yellow { background: #ffcc00; }
+.cards .card-usage .progress-fill.pct-red { background: #ff4444; }
+.cards .card-usage .val-time { color: #bbb; font-weight: 600; }
 
-.clr-jcodemunch { color: #ff9f43; }
-.fill-jcodemunch { background: #ff9f43; }
-.stroke-jcodemunch { stroke: #ff9f43; }
-.area-jcodemunch { fill: rgba(255, 159, 67, 0.1); }
-.clr-jdocmunch { color: #a55eea; }
-.fill-jdocmunch { background: #a55eea; }
-.stroke-jdocmunch { stroke: #a55eea; }
-.area-jdocmunch { fill: rgba(165, 94, 234, 0.1); }
+/* Tool accent colours — purely for card identity, no semantic meaning */
+.clr-rtk { color: #3b82f6; }
+.fill-rtk { background: #3b82f6; }
+.stroke-rtk { stroke: #3b82f6; }
+.area-rtk { fill: rgba(59, 130, 246, 0.1); }
+
+.clr-headroom { color: #8b5cf6; }
+.fill-headroom { background: #8b5cf6; }
+.stroke-headroom { stroke: #8b5cf6; }
+.area-headroom { fill: rgba(139, 92, 246, 0.1); }
+
+.card-name-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 .health-dot {
-    width: 5px;
-    height: 5px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    position: absolute;
-    left: -14px;
-    top: 50%;
-    transform: translateY(-50%);
+    display: inline-block;
+    flex: 0 0 auto;
 }
 .health-ok {
     background: #00ff88;
@@ -1058,132 +1298,95 @@ body {
 @media (max-width: 550px) {
     .cards { grid-template-columns: 1fr; }
 }
-/* Stats ticker */
-.ticker {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 6px 8px;
-    padding: 6px 0;
-    margin-bottom: 16px;
-    font-size: 13px;
-    color: #889;
-}
-.ticker .sep {
-    color: #556;
-}
-.ticker .tv {
-    color: #00bfff;
-    font-weight: bold;
-}
-.ticker .pct-green { color: #00ff88; }
-.ticker .pct-yellow { color: #ffcc00; }
-.ticker .pct-red { color: #ff4444; }
-@media (max-width: 600px) {
-    .ticker { font-size: 11px; gap: 3px 5px; }
-    .header { flex-wrap: wrap; justify-content: center; gap: 4px; }
-    .header-left { width: 100%; justify-content: center; }
-    .header-centre { font-size: 12px; }
-    .header-right { font-size: 12px; }
-    html, body { overflow: auto; height: auto; }
-}
 </style>
 </head>
 <body>
 <!-- Header -->
 <div class="header">
     <a class="header-left" href="https://github.com/Will-Luck/claude-tools-dashboard" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
-        <div class="pulse-dot"></div>
-        <div class="header-title">CLAUDE TOOLS</div>
+        <div class="header-title">CLAUDE ROOM</div>
     </a>
-    <div class="header-centre" id="combined">COMBINED: <span>0</span> tokens saved</div>
-    <div class="header-right" id="clock">--:--:-- &blacksquare; -- --- ----</div>
-</div>
-
-<!-- Stats Ticker -->
-<div class="ticker" id="ticker">
-    <span title="Tokens saved by all tools since your weekly Claude reset">Saved This Week: <span class="tv" id="tk-this-week">--</span></span>
-    <span class="sep">|</span>
-    <span title="Total tokens saved during the previous weekly period">Saved Last Week: <span class="tv" id="tk-last-week">--</span></span>
-    <span class="sep">|</span>
-    <span title="Average daily token savings this week">Avg: ~<span class="tv" id="tk-burn">--</span>/day</span>
-    <span class="sep">|</span>
-    <span title="When your Claude weekly usage allocation resets">Reset: <span class="tv" id="tk-reset">--</span></span>
-    <span class="sep">|</span>
-    <span title="Claude usage in your current 5-hour rolling window">5-Hour Window: <span id="tk-session-pct" class="tv">--</span></span>
-    <span class="sep">|</span>
-    <span title="Claude usage across your 7-day rolling period">Weekly: <span id="tk-weekly-pct" class="tv">--</span></span>
-    <span class="sep">|</span>
-    <span title="Sonnet-only usage across your 7-day rolling period">Sonnet: <span id="tk-sonnet-pct" class="tv">--</span></span>
+    <div class="header-right">DASHBOARD</div>
 </div>
 
 <!-- Cards -->
 <div class="cards">
+    <!-- Combined -->
+    <div class="card card-combined" id="summary-combined">
+        <div class="card-header">
+            <span class="card-name-group">
+                <span class="card-name">Combined</span>
+                <span class="health-dot health-ok" id="summary-combined-health"></span>
+            </span>
+        </div>
+        <div class="card-value" id="summary-combined-value">--</div>
+        <div class="card-sub" id="summary-combined-sub">tokens saved</div>
+        <div class="card-stats" id="summary-combined-stats">
+            <span><span class="label">this week</span> <span class="val" id="summary-this-week">--</span></span>
+            <span><span class="label">daily average</span> <span class="val" id="summary-burn">--</span></span>
+        </div>
+    </div>
+
     <!-- RTK -->
     <div class="card" id="rtk-card">
         <div class="card-header">
-            <span class="health-dot health-error" id="rtk-health"></span><a href="https://github.com/rtk-ai/rtk" target="_blank" class="card-name">RTK</a>
+            <span class="card-name-group">
+                <a href="https://github.com/rtk-ai/rtk" target="_blank" class="card-name">RTK</a>
+                <span class="health-dot health-error" id="rtk-health"></span>
+            </span>
             <span class="card-version" id="rtk-version">--</span>
         </div>
         <div class="card-value clr-rtk" id="rtk-value">--</div>
         <div class="card-sub" id="rtk-sub">tokens saved</div>
-        <div class="progress-track"><div class="progress-fill fill-rtk" id="rtk-bar" style="width:0%"></div></div>
         <div class="card-stats" id="rtk-stats">
             <span><span class="label">efficiency</span> <span class="val">--%</span></span>
         </div>
+        <div class="progress-track"><div class="progress-fill fill-rtk" id="rtk-bar" style="width:0%"></div></div>
         <div class="sparkline-container"><svg id="rtk-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="rtk-delta"></div>
     </div>
 
     <!-- Headroom -->
     <div class="card" id="headroom-card">
         <div class="card-header">
-            <span class="health-dot health-error" id="headroom-health"></span><a href="https://github.com/chopratejas/headroom" target="_blank" class="card-name">Headroom</a>
+            <span class="card-name-group">
+                <a href="https://github.com/chopratejas/headroom" target="_blank" class="card-name">Headroom</a>
+                <span class="health-dot health-error" id="headroom-health"></span>
+            </span>
             <span class="card-version" id="headroom-version">--</span>
         </div>
         <div class="card-value clr-headroom" id="headroom-value">--</div>
         <div class="card-sub" id="headroom-sub">awaiting first session</div>
-        <div class="progress-track"><div class="progress-fill fill-headroom" id="headroom-bar" style="width:0%"></div></div>
         <div class="card-stats" id="headroom-stats">
             <span><span class="label">proxy not active</span></span>
         </div>
+        <div class="progress-track"><div class="progress-fill fill-headroom" id="headroom-bar" style="width:0%"></div></div>
         <div class="sparkline-container"><svg id="headroom-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="headroom-delta"></div>
     </div>
 
-    <!-- jCodeMunch -->
-    <div class="card" id="jcodemunch-card">
+    <!-- Usage (merged Claude / Extra with toggle) -->
+    <div class="card card-usage" id="summary-usage">
         <div class="card-header">
-            <span class="health-dot health-error" id="jcodemunch-health"></span><a href="https://github.com/jgravelle/jcodemunch-mcp" target="_blank" class="card-name">jCodeMunch</a>
-            <span class="card-version" id="jcodemunch-version">--</span>
+            <span class="card-name-group">
+                <span class="card-name">Usage</span>
+                <span class="health-dot health-error" id="summary-usage-health"></span>
+            </span>
+            <div class="usage-toggle" id="summary-usage-toggle">
+                <button type="button" data-mode="claude" class="active">Claude</button>
+                <button type="button" data-mode="extra">Extra</button>
+            </div>
         </div>
-        <div class="card-value clr-jcodemunch" id="jcodemunch-value">--</div>
-        <div class="card-sub" id="jcodemunch-sub">tokens saved</div>
-        <div class="progress-track"><div class="progress-fill fill-jcodemunch" id="jcodemunch-bar" style="width:0%"></div></div>
-        <div class="card-stats" id="jcodemunch-stats">
-            <span><span class="label">repos</span> <span class="val">--</span></span>
+        <div id="summary-usage-claude">
+            <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
+            <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
+            <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
+            <div class="usage-row"><span class="label">Reset</span><span class="val val-time" id="summary-claude-reset">--</span></div>
         </div>
-        <div class="sparkline-container"><svg id="jcodemunch-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="jcodemunch-delta"></div>
+        <div id="summary-usage-extra" style="display:none;">
+            <div class="card-value dim" id="summary-extra-value">n/a</div>
+            <div class="card-sub" id="summary-extra-detail">not enabled</div>
+            <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%"></div></div>
+        </div>
     </div>
-
-    <!-- jDocMunch -->
-    <div class="card" id="jdocmunch-card">
-        <div class="card-header">
-            <span class="health-dot health-error" id="jdocmunch-health"></span><a href="https://github.com/jgravelle/jdocmunch-mcp" target="_blank" class="card-name">jDocMunch</a>
-            <span class="card-version" id="jdocmunch-version">--</span>
-        </div>
-        <div class="card-value clr-jdocmunch" id="jdocmunch-value">--</div>
-        <div class="card-sub" id="jdocmunch-sub">tokens saved</div>
-        <div class="progress-track"><div class="progress-fill fill-jdocmunch" id="jdocmunch-bar" style="width:0%"></div></div>
-        <div class="card-stats" id="jdocmunch-stats">
-            <span><span class="label">docs</span> <span class="val">--</span></span>
-        </div>
-        <div class="sparkline-container"><svg id="jdocmunch-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
-        <div class="card-delta" id="jdocmunch-delta"></div>
-    </div>
-
 </div>
 
 <!-- Activity Feed -->
@@ -1211,7 +1414,18 @@ function formatTime(ms) {
 
 function shortTime(t) {
     if (!t) return '';
-    // ISO: 2026-03-28T22:40:32.029588405+00:00 -> 22:40:32
+    // Parse as Date so explicit-UTC timestamps (rtk: +00:00) convert to the
+    // browser's local time. Naive date-time strings parse as local per
+    // ECMAScript, which matches the server-side normalizer that emits
+    // headroom's timestamps with explicit UTC offsets.
+    var d = new Date(t);
+    if (!isNaN(d.getTime())) {
+        var h = d.getHours(), mi = d.getMinutes(), s = d.getSeconds();
+        return (h < 10 ? '0' : '') + h + ':' +
+               (mi < 10 ? '0' : '') + mi + ':' +
+               (s < 10 ? '0' : '') + s;
+    }
+    // Fallback: extract HH:MM:SS for inputs we couldn't parse.
     var m = t.match(/T?(\\d{2}:\\d{2}:\\d{2})/);
     if (m) return m[1];
     return t.length > 8 ? t.substring(0, 8) : t;
@@ -1226,19 +1440,63 @@ function shortVersion(v) {
 }
 
 function pctClass(n) {
-    if (n == null) return 'tv';
+    if (n == null) return '';
     if (n > 80) return 'pct-red';
     if (n > 50) return 'pct-yellow';
     return 'pct-green';
 }
 
-var TOOLS = ['rtk', 'headroom', 'jcodemunch', 'jdocmunch'];
+function applyPctField(el, val) {
+    if (val == null) {
+        el.textContent = '--';
+        el.className = 'val';
+    } else {
+        el.textContent = val + '%';
+        el.className = 'val ' + pctClass(val);
+    }
+}
+
+var TOOLS = ['rtk', 'headroom'];
 var TOOL_COLOURS = {
-    rtk: '#00ff88',
-    headroom: '#00bfff',
-    jcodemunch: '#ff9f43',
-    jdocmunch: '#a55eea'
+    rtk: '#3b82f6',
+    headroom: '#8b5cf6'
 };
+
+// Usage card toggle state. userOverride is null until the user clicks a
+// segment; after that it sticks to "claude" or "extra" for the session and
+// the SSE tick's auto-default is ignored. See spec: docs/superpowers/specs/
+// 2026-04-15-drop-jcode-jdoc-merge-usage-design.md
+var usageUserOverride = null;
+
+function wireUsageToggle() {
+    var toggle = document.getElementById('summary-usage-toggle');
+    if (!toggle) return;
+    var buttons = toggle.querySelectorAll('button');
+    for (var i = 0; i < buttons.length; i++) {
+        buttons[i].addEventListener('click', function(e) {
+            var btn = e.currentTarget;
+            if (btn.disabled) return;
+            usageUserOverride = btn.getAttribute('data-mode');
+            applyUsageMode(usageUserOverride);
+        });
+    }
+}
+
+function applyUsageMode(mode) {
+    var claudeBody = document.getElementById('summary-usage-claude');
+    var extraBody = document.getElementById('summary-usage-extra');
+    var buttons = document.querySelectorAll('#summary-usage-toggle button');
+    for (var i = 0; i < buttons.length; i++) {
+        buttons[i].className = buttons[i].getAttribute('data-mode') === mode ? 'active' : '';
+    }
+    if (mode === 'extra') {
+        claudeBody.style.display = 'none';
+        extraBody.style.display = '';
+    } else {
+        claudeBody.style.display = '';
+        extraBody.style.display = 'none';
+    }
+}
 
 function renderSparkline(svgEl, points, tool) {
     if (!points || points.length < 2) {
@@ -1271,45 +1529,78 @@ function renderSparkline(svgEl, points, tool) {
 }
 
 function updateDashboard(d) {
-    // Combined
-    document.getElementById('combined').innerHTML =
-        'COMBINED: <span>' + formatTokens(d.combined_saved || 0) + '</span> tokens saved';
-
-    // Ticker
     var w = d.weekly || {};
     var cu = d.claude_usage || {};
-    document.getElementById('tk-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
-    document.getElementById('tk-last-week').textContent = w.last_week ? formatTokens(w.last_week, true) : '--';
-    document.getElementById('tk-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
-    document.getElementById('tk-reset').textContent = w.reset_display || '--';
+    var rtk = d.rtk || {};
+    var hr = d.headroom || {};
 
-    var sessionEl = document.getElementById('tk-session-pct');
-    var weeklyEl = document.getElementById('tk-weekly-pct');
-    if (cu.active && cu.session_pct != null) {
-        sessionEl.textContent = cu.session_pct + '%';
-        sessionEl.className = pctClass(cu.session_pct);
-    } else {
-        sessionEl.textContent = '--';
-        sessionEl.className = 'tv';
+    var hrLifetimeTokens = hr.lifetime_saved || 0;
+    var hrLifetimeUsd = hr.lifetime_saved_usd || 0;
+    var hrDisplayTokens = hrLifetimeTokens || hr.total_saved || 0;
+    var usdPerToken = (hrLifetimeTokens > 0 && hrLifetimeUsd > 0) ? hrLifetimeUsd / hrLifetimeTokens : null;
+    function tokensToUsd(n) { return usdPerToken != null ? n * usdPerToken : null; }
+    function tokensSavedSub(usd) {
+        return usd != null ? 'tokens saved · $' + usd.toFixed(2) : 'tokens saved';
     }
-    if (cu.active && cu.weekly_pct != null) {
-        weeklyEl.textContent = cu.weekly_pct + '%';
-        weeklyEl.className = pctClass(cu.weekly_pct);
-    } else {
-        weeklyEl.textContent = '--';
-        weeklyEl.className = 'tv';
+
+    // --- Combined card ---
+    document.getElementById('summary-combined-health').className = 'health-dot ' + (d.ready ? 'health-ok' : 'health-error');
+    document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
+    var combinedUsd = null;
+    if (usdPerToken != null) {
+        var nonHrTokens = rtk.total_saved || 0;
+        combinedUsd = hrLifetimeUsd + nonHrTokens * usdPerToken;
     }
-    var sonnetEl = document.getElementById('tk-sonnet-pct');
-    if (cu.active && cu.sonnet_pct != null) {
-        sonnetEl.textContent = cu.sonnet_pct + '%';
-        sonnetEl.className = pctClass(cu.sonnet_pct);
+    document.getElementById('summary-combined-sub').textContent = tokensSavedSub(combinedUsd);
+    document.getElementById('summary-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
+    document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
+
+    // --- Usage card (merged Claude + Extra with toggle) ---
+    var cuHealth = cu.health || (cu.active ? 'ok' : 'error');
+    document.getElementById('summary-usage-health').className = 'health-dot health-' + cuHealth;
+
+    // Claude sub-view
+    applyPctField(document.getElementById('summary-session-pct'), cu.active ? cu.session_pct : null);
+    applyPctField(document.getElementById('summary-weekly-pct'), cu.active ? cu.weekly_pct : null);
+    applyPctField(document.getElementById('summary-sonnet-pct'), cu.active ? cu.sonnet_pct : null);
+    document.getElementById('summary-claude-reset').textContent = w.reset_display || '--';
+
+    // Extra sub-view
+    var extraEnabled = !!(cu.active && cu.extra_usage_enabled);
+    var extraVal = document.getElementById('summary-extra-value');
+    var extraDetail = document.getElementById('summary-extra-detail');
+    var extraBar = document.getElementById('summary-extra-bar');
+    if (extraEnabled) {
+        var extraPct = cu.extra_usage_pct || 0;
+        extraVal.className = 'card-value ' + pctClass(extraPct);
+        extraVal.textContent = (cu.extra_usage_pct != null ? cu.extra_usage_pct.toFixed(1) : '0') + '%';
+        var used = cu.extra_usage_used;
+        var limit = cu.extra_usage_monthly_limit;
+        extraDetail.textContent = (used != null && limit != null)
+            ? '$' + used.toFixed(2) + ' / $' + limit.toFixed(2)
+            : 'active';
+        extraBar.style.width = Math.min(100, Math.max(0, extraPct)) + '%';
+        extraBar.className = 'progress-fill ' + pctClass(extraPct);
     } else {
-        sonnetEl.textContent = '--';
-        sonnetEl.className = 'tv';
+        extraVal.className = 'card-value dim';
+        extraVal.textContent = 'n/a';
+        extraDetail.textContent = 'not enabled';
+        extraBar.style.width = '0%';
+        extraBar.className = 'progress-fill';
     }
+
+    // Disable the Extra segment when extra is off; if the user had
+    // previously overridden to "extra", force-clear the override so the
+    // card falls back to Claude.
+    var extraBtn = document.querySelector('#summary-usage-toggle button[data-mode="extra"]');
+    if (extraBtn) extraBtn.disabled = !extraEnabled;
+    if (!extraEnabled && usageUserOverride === 'extra') usageUserOverride = null;
+
+    // Default mode auto-follows extra_usage_enabled until the user clicks.
+    var defaultMode = extraEnabled ? 'extra' : 'claude';
+    applyUsageMode(usageUserOverride || defaultMode);
 
     // RTK
-    var rtk = d.rtk || {};
     var rtkCard = document.getElementById('rtk-card');
     rtkCard.className = rtk.active ? 'card' : 'card inactive';
     var rtkHealth = rtk.health || 'error';
@@ -1317,7 +1608,7 @@ function updateDashboard(d) {
     if (rtkDot) rtkDot.className = 'health-dot health-' + rtkHealth;
     document.getElementById('rtk-version').textContent = shortVersion(rtk.version);
     document.getElementById('rtk-value').textContent = rtk.active ? formatTokens(rtk.total_saved || 0) : '--';
-    document.getElementById('rtk-sub').textContent = 'tokens saved';
+    document.getElementById('rtk-sub').textContent = tokensSavedSub(rtk.active ? tokensToUsd(rtk.total_saved || 0) : null);
     document.getElementById('rtk-bar').style.width = (rtk.avg_savings_pct || 0) + '%';
     if (rtk.active && rtk.total_commands) {
         var avgMs = rtk.total_time_ms / rtk.total_commands;
@@ -1328,7 +1619,6 @@ function updateDashboard(d) {
     }
 
     // Headroom
-    var hr = d.headroom || {};
     var hrCard = document.getElementById('headroom-card');
     hrCard.className = hr.active ? 'card' : 'card inactive';
     var hrHealth = hr.health || 'error';
@@ -1336,53 +1626,19 @@ function updateDashboard(d) {
     if (hrDot) hrDot.className = 'health-dot health-' + hrHealth;
     document.getElementById('headroom-version').textContent = shortVersion(hr.version);
     if (hr.active) {
-        document.getElementById('headroom-value').textContent = formatTokens(hr.total_saved || 0);
-        document.getElementById('headroom-sub').textContent = 'tokens saved';
-        document.getElementById('headroom-bar').style.width = (hr.compression_ratio || hr.avg_savings_pct || 0) + '%';
+        document.getElementById('headroom-value').textContent = formatTokens(hrDisplayTokens);
+        document.getElementById('headroom-sub').textContent = tokensSavedSub(usdPerToken != null ? hrLifetimeUsd : null);
+        document.getElementById('headroom-bar').style.width = (hr.avg_savings_pct || 0) + '%';
         document.getElementById('headroom-stats').innerHTML =
-            '<span><span class="label">sessions</span> <span class="val">' + (hr.sessions || 0) + '</span></span>';
+            '<span><span class="label">efficiency</span> <span class="val">' + (hr.avg_savings_pct || 0) + '%</span></span>' +
+            '<span><span class="label">cache</span> <span class="val">' + Math.round(hr.cache_hit_rate || 0) + '%</span></span>' +
+            '<span><span class="label">req</span> <span class="val">' + (hr.requests_total || 0) + '</span></span>';
     } else {
         document.getElementById('headroom-value').textContent = '--';
         document.getElementById('headroom-sub').textContent = 'awaiting first session';
         document.getElementById('headroom-bar').style.width = '0%';
         document.getElementById('headroom-stats').innerHTML =
             '<span><span class="label">proxy not active</span></span>';
-    }
-
-    // jCodeMunch
-    var jc = d.jcodemunch || {};
-    var jcCard = document.getElementById('jcodemunch-card');
-    jcCard.className = jc.active ? 'card' : 'card inactive';
-    var jcHealth = jc.health || 'error';
-    var jcDot = document.getElementById('jcodemunch-health');
-    if (jcDot) jcDot.className = 'health-dot health-' + jcHealth;
-    document.getElementById('jcodemunch-version').textContent = shortVersion(jc.version);
-    document.getElementById('jcodemunch-value').textContent = jc.active ? formatTokens(jc.total_saved || 0) : '--';
-    document.getElementById('jcodemunch-sub').textContent = 'tokens saved';
-    document.getElementById('jcodemunch-bar').style.width = (jc.freshness || 0) + '%';
-    if (jc.active) {
-        document.getElementById('jcodemunch-stats').innerHTML =
-            '<span><span class="label">repos</span> <span class="val">' + (jc.repos_indexed || 0) + '</span></span>' +
-            '<span><span class="label">indexed</span> <span class="val">' + (jc.index_size_mb || 0) + 'MB</span></span>' +
-            '<span><span class="label">active</span> <span class="val">' + (jc.freshness_label || 'idle') + '</span></span>';
-    }
-
-    // jDocMunch
-    var jd = d.jdocmunch || {};
-    var jdCard = document.getElementById('jdocmunch-card');
-    jdCard.className = jd.active ? 'card' : 'card inactive';
-    var jdHealth = jd.health || 'error';
-    var jdDot = document.getElementById('jdocmunch-health');
-    if (jdDot) jdDot.className = 'health-dot health-' + jdHealth;
-    document.getElementById('jdocmunch-version').textContent = shortVersion(jd.version);
-    document.getElementById('jdocmunch-value').textContent = jd.active ? formatTokens(jd.total_saved || 0) : '--';
-    document.getElementById('jdocmunch-sub').textContent = 'tokens saved';
-    document.getElementById('jdocmunch-bar').style.width = (jd.freshness || 0) + '%';
-    if (jd.active) {
-        document.getElementById('jdocmunch-stats').innerHTML =
-            '<span><span class="label">docs</span> <span class="val">' + (jd.docs_indexed || 0) + '</span></span>' +
-            '<span><span class="label">indexed</span> <span class="val">' + (jd.index_size_mb || 0) + 'MB</span></span>' +
-            '<span><span class="label">active</span> <span class="val">' + (jd.freshness_label || 'idle') + '</span></span>';
     }
 
     // Sparklines
@@ -1392,16 +1648,6 @@ function updateDashboard(d) {
             var sp = d.sparklines[t];
             var pts = sp ? (sp.points || sp) : [];
             renderSparkline(document.getElementById(t + '-sparkline'), pts, t);
-
-            var deltaEl = document.getElementById(t + '-delta');
-            var delta = sp ? (sp.delta || 0) : 0;
-            if (delta > 0) {
-                deltaEl.textContent = '+' + formatTokens(delta);
-                deltaEl.className = 'card-delta active';
-            } else {
-                deltaEl.textContent = '';
-                deltaEl.className = 'card-delta';
-            }
         }
     }
 
@@ -1409,7 +1655,7 @@ function updateDashboard(d) {
     var feedEl = document.getElementById('feed');
     var hist = d.history || [];
     var lines = [];
-    for (var j = 0; j < hist.length && j < 100; j++) {
+    for (var j = 0; j < hist.length; j++) {
         var h = hist[j];
         var toolClr = TOOL_COLOURS[h.tool] || '#888';
         var savingsClass = 'info';
@@ -1445,7 +1691,7 @@ function updateDashboard(d) {
 
     var countEl = document.querySelector('.feed-count');
     if (countEl) {
-        countEl.textContent = 'showing last ' + Math.min(hist.length, 100);
+        countEl.textContent = 'showing last ' + hist.length;
     }
 }
 
@@ -1453,20 +1699,7 @@ function escHtml(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Clock
-function updateClock() {
-    var now = new Date();
-    var h = String(now.getHours()).padStart(2, '0');
-    var m = String(now.getMinutes()).padStart(2, '0');
-    var s = String(now.getSeconds()).padStart(2, '0');
-    var months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-    var day = String(now.getDate()).padStart(2, '0');
-    var mon = months[now.getMonth()];
-    var yr = now.getFullYear();
-    document.getElementById('clock').textContent = h + ':' + m + ':' + s + ' \u25aa ' + day + ' ' + mon + ' ' + yr;
-}
-setInterval(updateClock, 1000);
-updateClock();
+wireUsageToggle();
 
 // SSE
 var source = new EventSource('/events');
@@ -1496,6 +1729,19 @@ def index():
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/status")
+def api_status():
+    flat = _flatten_snapshot(_collector.snapshot())
+    return Response(
+        json.dumps(flat),
+        mimetype="application/json",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.route("/events")
