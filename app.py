@@ -1111,40 +1111,9 @@ body {
 }
 
 /* Combined + Usage card specifics */
-.cards .card-combined .card-value { color: #00ff88; margin-bottom: 0; }
-.cards .card-combined .card-sub-usd { color: #5cc48a; font-size: 12px; margin-top: 2px; }
-.cards .card-combined .combined-body {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-}
-.cards .card-combined .combined-body > div:first-child { flex: 0 0 auto; }
-.cards .card-combined .combined-stats { flex: 1 1 0; min-width: 0; }
-.cards .card-combined .combined-stats {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-.cards .card-combined .combined-stats .stat-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    align-items: baseline;
-}
-.cards .card-combined .combined-stats .label {
-    color: #888;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-size: 10px;
-}
-.cards .card-combined .combined-stats .val {
-    color: #fff;
-    font-weight: 600;
-    font-size: 14px;
-}
-.cards .card-combined .val-live { color: #00ff88; }
-.cards .card-combined .val-rate { color: #5cc48a; }
-.cards .card-combined .val-cold { color: #666; }
+.cards .card-combined .card-value { color: #00ff88; }
+.cards .card-combined .card-stats { gap: 12px; }
+.cards .card-combined .card-stats > span { white-space: nowrap; }
 
 .cards .card-usage .usage-toggle {
     display: flex;
@@ -1348,40 +1317,12 @@ body {
             <span class="health-dot health-ok" id="summary-combined-health"></span>
             <span class="card-name">Combined</span>
         </div>
-        <div class="combined-body">
-            <div>
-                <div class="card-value" id="summary-combined-value">--</div>
-                <div class="card-sub">tokens saved</div>
-                <div class="card-sub card-sub-usd" id="summary-combined-usd">--</div>
-            </div>
-            <div class="combined-stats">
-                <div class="stat-row"><span class="label">This Week</span><span class="val val-live" id="summary-this-week">--</span></div>
-                <div class="stat-row"><span class="label">Last Week</span><span class="val val-cold" id="summary-last-week">--</span></div>
-                <div class="stat-row"><span class="label">Avg/Day</span><span class="val val-rate" id="summary-burn">--</span></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Usage (merged Claude / Extra with toggle) -->
-    <div class="card card-usage" id="summary-usage">
-        <div class="card-header">
-            <span class="health-dot health-error" id="summary-usage-health"></span>
-            <span class="card-name">Usage</span>
-            <div class="usage-toggle" id="summary-usage-toggle">
-                <button type="button" data-mode="claude" class="active">Claude</button>
-                <button type="button" data-mode="extra">Extra</button>
-            </div>
-        </div>
-        <div id="summary-usage-claude">
-            <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
-            <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
-            <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
-            <div class="usage-row"><span class="label">Reset</span><span class="val val-time" id="summary-claude-reset">--</span></div>
-        </div>
-        <div id="summary-usage-extra" style="display:none;">
-            <div class="card-value dim" id="summary-extra-value">n/a</div>
-            <div class="card-sub" id="summary-extra-detail">not enabled</div>
-            <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%"></div></div>
+        <div class="card-value" id="summary-combined-value">--</div>
+        <div class="card-sub" id="summary-combined-sub">tokens saved</div>
+        <div class="card-stats" id="summary-combined-stats">
+            <span><span class="label">this week</span> <span class="val" id="summary-this-week">--</span></span>
+            <span><span class="label">last week</span> <span class="val" id="summary-last-week">--</span></span>
+            <span><span class="label">avg/day</span> <span class="val" id="summary-burn">--</span></span>
         </div>
     </div>
 
@@ -1415,6 +1356,29 @@ body {
         </div>
         <div class="sparkline-container"><svg id="headroom-sparkline" viewBox="0 0 200 35" preserveAspectRatio="none"></svg></div>
         <div class="card-delta" id="headroom-delta"></div>
+    </div>
+
+    <!-- Usage (merged Claude / Extra with toggle) -->
+    <div class="card card-usage" id="summary-usage">
+        <div class="card-header">
+            <span class="health-dot health-error" id="summary-usage-health"></span>
+            <span class="card-name">Usage</span>
+            <div class="usage-toggle" id="summary-usage-toggle">
+                <button type="button" data-mode="claude" class="active">Claude</button>
+                <button type="button" data-mode="extra">Extra</button>
+            </div>
+        </div>
+        <div id="summary-usage-claude">
+            <div class="usage-row"><span class="label">5-Hour</span><span class="val" id="summary-session-pct">--</span></div>
+            <div class="usage-row"><span class="label">Weekly</span><span class="val" id="summary-weekly-pct">--</span></div>
+            <div class="usage-row"><span class="label">Sonnet</span><span class="val" id="summary-sonnet-pct">--</span></div>
+            <div class="usage-row"><span class="label">Reset</span><span class="val val-time" id="summary-claude-reset">--</span></div>
+        </div>
+        <div id="summary-usage-extra" style="display:none;">
+            <div class="card-value dim" id="summary-extra-value">n/a</div>
+            <div class="card-sub" id="summary-extra-detail">not enabled</div>
+            <div class="progress-track"><div class="progress-fill" id="summary-extra-bar" style="width:0%"></div></div>
+        </div>
     </div>
 </div>
 
@@ -1575,14 +1539,12 @@ function updateDashboard(d) {
     // --- Combined card ---
     document.getElementById('summary-combined-health').className = 'health-dot ' + (d.ready ? 'health-ok' : 'health-error');
     document.getElementById('summary-combined-value').textContent = formatTokens(d.combined_saved || 0);
-    var combinedUsdEl = document.getElementById('summary-combined-usd');
+    var combinedUsd = null;
     if (usdPerToken != null) {
         var nonHrTokens = rtk.total_saved || 0;
-        var combinedUsd = hrLifetimeUsd + nonHrTokens * usdPerToken;
-        combinedUsdEl.textContent = '≈ $' + combinedUsd.toFixed(2) + ' saved';
-    } else {
-        combinedUsdEl.textContent = '--';
+        combinedUsd = hrLifetimeUsd + nonHrTokens * usdPerToken;
     }
+    document.getElementById('summary-combined-sub').textContent = tokensSavedSub(combinedUsd);
     document.getElementById('summary-this-week').textContent = w.week_is_fresh ? '--' : (w.this_week != null ? formatTokens(w.this_week, true) : '--');
     document.getElementById('summary-last-week').textContent = w.last_week != null ? (w.last_week === 0 ? '0' : formatTokens(w.last_week, true)) : '--';
     document.getElementById('summary-burn').textContent = w.burn_rate_daily != null ? (w.burn_rate_daily === 0 ? '0' : formatTokens(w.burn_rate_daily, true)) : '--';
