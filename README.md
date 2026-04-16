@@ -70,7 +70,7 @@ The proxy listens on `http://127.0.0.1:8787` by default. Point Claude Code at it
 ANTHROPIC_BASE_URL=http://localhost:8787 claude
 ```
 
-**Optional:** Set `ANTHROPIC_API_KEY` to enable exact token counting via the Anthropic API (free, no credits consumed). Without it, Headroom falls back to tiktoken approximation and logs a warning.
+**Optional:** Set `ANTHROPIC_API_KEY` to enable exact token counting via the Anthropic API (free, no credits consumed). Without it, Headroom falls back to tiktoken approximation, which can produce noticeable discrepancies in savings calculations.
 
 ## Configuration
 
