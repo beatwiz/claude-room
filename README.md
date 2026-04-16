@@ -38,6 +38,14 @@ python app.py
 
 Headroom must be reachable from the container — the default `HEADROOM_URL=http://host.docker.internal:8787` works on Docker Desktop. On Linux, either use `--network host` or point `HEADROOM_URL` at your host IP.
 
+## Requirements
+
+The Usage card (5-hour / weekly / Sonnet utilization) depends on Headroom's subscription window poller, which was added in **headroom-ai >= 0.5.25**. Earlier versions do not include this feature and the card will show as inactive.
+
+```bash
+pip install --upgrade headroom-ai
+```
+
 ## Configuration
 
 All settings via environment variables. See `.env.example` for the full list.
