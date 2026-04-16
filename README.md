@@ -40,11 +40,37 @@ Headroom must be reachable from the container — the default `HEADROOM_URL=http
 
 ## Requirements
 
-The Usage card (5-hour / weekly / Sonnet utilization) depends on Headroom's subscription window poller, which was added in **headroom-ai >= 0.5.25**. Earlier versions do not include this feature and the card will show as inactive.
+- **[Headroom](https://github.com/chopratejas/headroom) >= 0.5.25** — the subscription window poller (5-hour / weekly / Sonnet utilization) was added in this version. Earlier versions do not include it and the Usage card will show as inactive.
+- **[RTK](https://github.com/Will-Luck/rtk)** — CLI proxy for command-level token savings.
 
 ```bash
 pip install --upgrade headroom-ai
+pip install headroom-ai[code]  # optional: adds tree-sitter grammars (~50MB) for AST-based code compression
 ```
+
+### Starting Headroom
+
+The dashboard reads all data from Headroom's `/stats` endpoint. Start the proxy before launching the dashboard:
+
+```bash
+headroom proxy --memory --memory-db-path ~/.headroom/memory.db --no-telemetry --learn --code-aware
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--memory` | Enable persistent user memory |
+| `--memory-db-path` | Memory database location |
+| `--no-telemetry` | Disable anonymous usage telemetry |
+| `--learn` | Extract error/recovery patterns from proxy traffic (implies `--memory`) |
+| `--code-aware` | AST-based code compression via tree-sitter (requires `headroom-ai[code]`) |
+
+The proxy listens on `http://127.0.0.1:8787` by default. Point Claude Code at it:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8787 claude
+```
+
+**Optional:** Set `ANTHROPIC_API_KEY` to enable exact token counting via the Anthropic API (free, no credits consumed). Without it, Headroom falls back to tiktoken approximation and logs a warning.
 
 ## Configuration
 
