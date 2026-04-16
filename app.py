@@ -1307,7 +1307,7 @@ body {
 <body>
 <!-- Header -->
 <div class="header">
-    <a class="header-left" href="https://github.com/Will-Luck/claude-tools-dashboard" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
+    <a class="header-left" href="https://github.com/beatwiz/claude-room" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
         <div class="header-title">CLAUDE ROOM</div>
     </a>
     <a class="header-right" href="__HEADROOM_DASHBOARD_URL__" target="_blank" rel="noopener noreferrer" title="Open Headroom dashboard">HEADROOM DASHBOARD</a>
